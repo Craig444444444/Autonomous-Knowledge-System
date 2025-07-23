@@ -7,7 +7,6 @@ I will be using it to build upon my own reposatory Walta/not this one.
 you will need to change infomation pertaining to your own needs and repo.
 
 generate all your reposatory notes codes into a zip file containing chunks with your files.
-"zip info" 
 
 paste walta main 
 
