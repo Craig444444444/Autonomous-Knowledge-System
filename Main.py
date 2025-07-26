@@ -118,7 +118,7 @@ try:
 except ImportError:
     gr = None
 
-# IMPORT MODULAR COMPONENTS
+# IMPORT ALL MODULAR COMPONENTS
 try:
     from ai_generator import AIGenerator
     from knowledge_processor import KnowledgeProcessor
@@ -131,6 +131,17 @@ try:
     from security import SecurityManager
     from audit import AuditManager
     from file_handler import FileHandler
+    from api_handler import APIHandler
+    from task_scheduler import TaskScheduler
+    from monitoring import Monitoring
+    from plugin_manager import PluginManager
+    from user_manager import UserManager
+    from data_visualizer import DataVisualizer
+    from version_migrator import VersionMigrator
+    from documentation_generator import DocumentationGenerator
+    from testing_framework import TestingFramework
+    from agent_orchestrator import AgentOrchestrator
+    from vector_db import VectorDB
 except ImportError as e:
     print(f"\n\nCRITICAL ERROR: Could not import a core modular component: {e}", file=sys.stderr)
     print("Please ensure all required .py files are in the same directory as aks_main.py", file=sys.stderr)
@@ -140,7 +151,7 @@ except ImportError as e:
 class Config:
     """Centralized configuration management system."""
     def __init__(self):
-        self._config_version: str = "1.2"
+        self._config_version: str = "1.3"  # Updated version
         self._repo_owner: Optional[str] = os.getenv("GITHUB_REPO_OWNER") or "Craig444444444"
         self._repo_name: str = os.getenv("GITHUB_REPO_NAME") or "AKS"
         self._repo_url: Optional[str] = f"https://github.com/{self._repo_owner}/{self._repo_name}.git"
@@ -153,6 +164,9 @@ class Config:
         self._snapshot_dir: Path = Path("/content/snapshots")
         self._quarantine_dir: Path = Path("/content/quarantine")
         self._user_uploads_dir: Path = Path("/content/aks_user_uploads")
+        self._vector_db_dir: Path = Path("/content/vector_db")  # New directory for vector database
+        
+        # System configuration
         self._log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
         self._github_token: Optional[str] = os.getenv("GITHUB_TOKEN")
         self._gemini_key: Optional[str] = os.getenv("GEMINI_API_KEY")
@@ -162,6 +176,8 @@ class Config:
         self._push_interval: int = int(os.getenv("PUSH_INTERVAL", 60))
         self._ai_activity_chance: float = float(os.getenv("AI_ACTIVITY_CHANCE", 0.7))
         self._api_max_retries: int = int(os.getenv("API_MAX_RETRIES", MAX_API_RETRIES))
+        self._max_plugins: int = int(os.getenv("MAX_PLUGINS", 10))  # New config for plugins
+        self._max_concurrent_tasks: int = int(os.getenv("MAX_CONCURRENT_TASKS", 5))  # New config for task scheduler
 
         # Preferred models list
         if not self._gemini_key:
@@ -172,13 +188,23 @@ class Config:
                 "gpt2"
             ]
 
+        # Enhanced scraper configuration
         self._scraper_config = {
             'user_agent': 'AKSBot/1.0',
             'max_retries': 3,
             'retry_delay': 5,
             'extraction_tags': ['p', 'h1', 'h2', 'h3', 'article'],
-            'max_links': 15
+            'max_links': 15,
+            'timeout': 30  # Added timeout parameter
         }
+        
+        # New vector database configuration
+        self._vector_db_config = {
+            'embedding_model': 'all-MiniLM-L6-v2',
+            'max_connections': 10,
+            'persist_interval': 300  # seconds
+        }
+        
         self._setup_directories()
 
     def _setup_directories(self):
@@ -187,7 +213,7 @@ class Config:
             self._repo_path, self._snapshot_dir, Path("/content/logs"),
             self._user_feedback_dir, self._archive_dir, self._temp_dir,
             self._knowledge_base_dir, self._quarantine_dir,
-            self._user_uploads_dir
+            self._user_uploads_dir, self._vector_db_dir  # Added vector db directory
         ]
         for dir_path in dirs:
             try:
@@ -196,6 +222,7 @@ class Config:
             except OSError as e:
                 sys.stderr.write(f"Error creating directory {dir_path}: {e}\n")
 
+    # Properties for all configuration values
     @property
     def config_version(self) -> str: return self._config_version
     @property
@@ -234,6 +261,8 @@ class Config:
     @property
     def user_uploads_dir(self) -> Path: return self._user_uploads_dir
     @property
+    def vector_db_dir(self) -> Path: return self._vector_db_dir  # New property
+    @property
     def log_level(self) -> str: return self._log_level
     @property
     def github_token(self) -> Optional[str]: return self._github_token
@@ -256,9 +285,15 @@ class Config:
     @property
     def api_max_retries(self) -> int: return self._api_max_retries
     @property
+    def max_plugins(self) -> int: return self._max_plugins  # New property
+    @property
+    def max_concurrent_tasks(self) -> int: return self._max_concurrent_tasks  # New property
+    @property
     def preferred_models(self) -> List[str]: return self._preferred_models
     @property
     def scraper_config(self) -> Dict[str, Any]: return self._scraper_config
+    @property
+    def vector_db_config(self) -> Dict[str, Any]: return self._vector_db_config  # New property
 
     def validate(self) -> List[str]:
         """Validate configuration and return errors."""
@@ -282,7 +317,8 @@ class Config:
                 "user_feedback_dir": str(self._user_feedback_dir), "archive_dir": str(self._archive_dir),
                 "temp_dir": str(self._temp_dir), "knowledge_base_dir": str(self._knowledge_base_dir),
                 "snapshot_dir": str(self._snapshot_dir), "quarantine_dir": str(self._quarantine_dir),
-                "user_uploads_dir": str(self._user_uploads_dir)
+                "user_uploads_dir": str(self._user_uploads_dir),
+                "vector_db_dir": str(self._vector_db_dir)  # Added vector db directory
             },
             "api": {
                 "github_token": "***REDACTED***" if self._github_token else None,
@@ -293,13 +329,15 @@ class Config:
                 "max_snapshots": self._max_snapshots, "cycle_interval": self._cycle_interval,
                 "push_interval": self._push_interval, "ai_activity_chance": self._ai_activity_chance,
                 "api_max_retries": self._api_max_retries, "preferred_models": self._preferred_models,
-                "scraper_config": self._scraper_config
+                "max_plugins": self._max_plugins, "max_concurrent_tasks": self._max_concurrent_tasks,
+                "scraper_config": self._scraper_config,
+                "vector_db_config": self._vector_db_config  # Added vector db config
             }
         }
 
 config = Config()
 
-# LOGGING SYSTEM
+# LOGGING SYSTEM (unchanged from previous version)
 class ColoredFormatter(logging.Formatter):
     """Custom colored formatter for console output."""
     COLORS = {'DEBUG': '\033[36m', 'INFO': '\033[32m', 'WARNING': '\033[33m', 
@@ -360,7 +398,7 @@ class LogManager:
 
 LOGGER = LogManager()
 
-# AI PROVIDER IMPLEMENTATION
+# AI PROVIDER IMPLEMENTATION (unchanged from previous version)
 class AIProvider:
     """Base class for AI providers with common functionality."""
     def __init__(self, name: str, api_key: Optional[str] = None):
@@ -401,7 +439,7 @@ class AIProvider:
     def generate_code(self, prompt: str, system_prompt: str, max_tokens: int = 4096) -> Optional[str]: 
         raise NotImplementedError
 
-# Retry Mechanism (Decorator)
+# Retry Mechanism (Decorator) (unchanged from previous version)
 def with_retries(func: Callable, max_retries: int = config.api_max_retries, backoff_factor: float = 1.0) -> Any:
     """Decorator to retry a function with exponential backoff."""
     def wrapper(*args, **kwargs):
@@ -627,14 +665,15 @@ class AIProviderManager:
             status[provider.name] = status_text
         return status
 
-# AUTONOMOUS AGENT
+# AUTONOMOUS AGENT - UPDATED WITH ALL NEW COMPONENTS
 class AutonomousAgent:
-    """Core autonomous agent managing the system loop."""
+    """Core autonomous agent managing the system loop with all integrated components."""
     def __init__(self):
         self.active = True
         self.system_activities: List[str] = []
         self._system_activities_lock = threading.Lock()
-
+        
+        # Initialize all core components
         self.ai_provider_manager = AIProviderManager(config.preferred_models)
         self.file_handler = FileHandler(config.repo_path)
         self.git_manager = GitManager(
@@ -644,10 +683,28 @@ class AutonomousAgent:
             config.repo_name, 
             config.repo_url
         )
-        self.ai_generator = AIGenerator(self.ai_provider_manager, config.repo_path, self.file_handler)
+        
+        # Knowledge and processing components
         self.knowledge_processor = KnowledgeProcessor(config.knowledge_base_dir)
-        self.resilience_manager = ResilienceManager(config.repo_path, config.snapshot_dir, config.max_snapshots)
+        self.vector_db = VectorDB(config.vector_db_dir, config.vector_db_config)  # New vector database
         self.nli = NaturalLanguageInterface(self.ai_provider_manager)
+        
+        # AI generation components
+        self.ai_generator = AIGenerator(
+            self.ai_provider_manager, 
+            config.repo_path, 
+            self.file_handler,
+            self.vector_db  # Pass vector db to AI generator
+        )
+        
+        # System management components
+        self.resilience_manager = ResilienceManager(config.repo_path, config.snapshot_dir, config.max_snapshots)
+        self.security_manager = SecurityManager()
+        self.audit_manager = AuditManager(config.repo_path)
+        self.monitoring = Monitoring()  # New monitoring system
+        self.task_scheduler = TaskScheduler(max_tasks=config.max_concurrent_tasks)  # New task scheduler
+        
+        # Collaboration and integration components
         self.collaborative_processor = CollaborativeProcessor(
             self.knowledge_processor, 
             config.user_feedback_dir, 
@@ -656,14 +713,41 @@ class AutonomousAgent:
         self.information_sourcing = InformationSourcing(
             self.ai_provider_manager, 
             self.knowledge_processor, 
-            config
+            config,
+            self.vector_db  # Pass vector db to information sourcing
         )
+        self.api_handler = APIHandler()  # New API handler
+        self.plugin_manager = PluginManager(max_plugins=config.max_plugins)  # New plugin manager
+        
+        # Code and documentation components
         self.codebase_enhancer = CodebaseEnhancer(self.ai_generator)
-        self.security_manager = SecurityManager()
-        self.audit_manager = AuditManager(config.repo_path)
+        self.documentation_generator = DocumentationGenerator(self.ai_generator)  # New documentation generator
+        self.testing_framework = TestingFramework()  # New testing framework
+        
+        # User and data components
+        self.user_manager = UserManager()  # New user manager
+        self.data_visualizer = DataVisualizer()  # New data visualizer
+        self.version_migrator = VersionMigrator()  # New version migrator
+        
+        # Orchestration component
+        self.agent_orchestrator = AgentOrchestrator(self)  # New orchestrator
 
+        # System state
         self.last_push_time = 0
         self.cycle_count = 0
+        self.start_time = time.time()
+        
+        # Initialize all plugins
+        self._initialize_plugins()
+
+    def _initialize_plugins(self):
+        """Initialize all registered plugins."""
+        try:
+            LOGGER.info("Initializing plugins...")
+            self.plugin_manager.load_plugins()
+            LOGGER.info(f"Loaded {len(self.plugin_manager.get_plugins())} plugins")
+        except Exception as e:
+            LOGGER.error(f"Failed to initialize plugins: {e}")
 
     def add_system_activity(self, activity: str):
         """Adds an activity to the system's activity log."""
@@ -696,18 +780,28 @@ class AutonomousAgent:
     def _perform_initial_setup(self):
         """Performs initial setup tasks."""
         try:
+            # Initialize Git repository if needed
             if not self.git_manager.is_repo_initialized():
                 LOGGER.info("Initializing Git repository...")
                 self.git_manager.initialize_repo()
             else:
                 LOGGER.info("Git repository already initialized.")
 
+            # Create initial README if needed
             if not self.file_handler.file_exists("README.md"):
                 LOGGER.info("Creating initial README.md...")
                 self.file_handler.write_file("README.md", f"# {config.repo_name}\n\nAutonomous Knowledge System.")
                 self.git_manager.commit_and_push("Initial README.md creation")
             else:
                 LOGGER.info("README.md already exists.")
+                
+            # Initialize vector database
+            LOGGER.info("Initializing vector database...")
+            self.vector_db.initialize()
+            
+            # Load initial plugins
+            self._initialize_plugins()
+            
         except Exception as e:
             LOGGER.exception(f"Initial setup failed: {e}")
 
@@ -728,7 +822,15 @@ class AutonomousAgent:
             try:
                 LOGGER.info("Initiating codebase enhancement...")
                 self.add_system_activity("Codebase Enhancement")
-                if self.codebase_enhancer.enhance_codebase():
+                
+                # Schedule enhancement tasks
+                task_results = self.task_scheduler.run_tasks([
+                    lambda: self.codebase_enhancer.enhance_codebase(),
+                    lambda: self.documentation_generator.update_documentation(),
+                    lambda: self.testing_framework.run_tests()
+                ])
+                
+                if task_results[0]:  # Code enhancement result
                     LOGGER.info("Codebase enhancement successful.")
                     self.git_manager.commit_and_push("Enhanced codebase")
                     return True
@@ -744,9 +846,16 @@ class AutonomousAgent:
             try:
                 LOGGER.info("Initiating information sourcing...")
                 self.add_system_activity("Information Sourcing")
-                self.information_sourcing.gather_information()
-                self.git_manager.commit_and_push("Updated knowledge base from information sourcing")
-                return True
+                
+                # Use task scheduler for parallel processing
+                results = self.task_scheduler.run_tasks([
+                    lambda: self.information_sourcing.gather_information(),
+                    lambda: self.vector_db.update_indexes()  # Update vector indexes in parallel
+                ])
+                
+                if results[0]:  # Information gathering result
+                    self.git_manager.commit_and_push("Updated knowledge base from information sourcing")
+                    return True
             except Exception as e:
                 LOGGER.exception(f"Information sourcing failed: {e}")
         return False
@@ -756,9 +865,16 @@ class AutonomousAgent:
         try:
             LOGGER.info("Initiating collaborative processing...")
             self.add_system_activity("Collaborative Processing")
-            self.collaborative_processor.process_feedback()
-            self.git_manager.commit_and_push("Processed User Feedback")
-            return True
+            
+            # Process feedback and update user profiles in parallel
+            results = self.task_scheduler.run_tasks([
+                self.collaborative_processor.process_feedback,
+                self.user_manager.update_user_profiles
+            ])
+            
+            if results[0]:  # Feedback processing result
+                self.git_manager.commit_and_push("Processed User Feedback")
+                return True
         except Exception as e:
             LOGGER.exception(f"Collaborative processing failed: {e}")
             return False
@@ -768,11 +884,32 @@ class AutonomousAgent:
         try:
             LOGGER.info("Running security checks...")
             self.add_system_activity("Security Checks")
-            self.security_manager.perform_system_integrity_checks()
-            self.security_manager.analyze_logs_for_anomalies(self.audit_manager.load_audit_log())
-            return True
+            
+            # Run security checks in parallel
+            results = self.task_scheduler.run_tasks([
+                lambda: self.security_manager.perform_system_integrity_checks(),
+                lambda: self.security_manager.analyze_logs_for_anomalies(self.audit_manager.load_audit_log()),
+                lambda: self.plugin_manager.scan_for_malicious_plugins()
+            ])
+            
+            return any(results)  # Return True if any checks found issues
         except Exception as e:
             LOGGER.exception(f"Security checks failed: {e}")
+            return False
+
+    def _run_plugin_tasks(self) -> bool:
+        """Execute scheduled plugin tasks."""
+        try:
+            LOGGER.info("Running plugin tasks...")
+            self.add_system_activity("Plugin Execution")
+            
+            # Get all plugin tasks and execute them in parallel
+            plugin_tasks = [plugin.execute for plugin in self.plugin_manager.get_plugins()]
+            results = self.task_scheduler.run_tasks(plugin_tasks)
+            
+            return any(results)  # Return True if any plugins executed successfully
+        except Exception as e:
+            LOGGER.exception(f"Plugin execution failed: {e}")
             return False
 
     def _perform_snapshot(self):
@@ -780,7 +917,11 @@ class AutonomousAgent:
         try:
             LOGGER.info("Creating system snapshot...")
             self.add_system_activity("Snapshot Creation")
+            
+            # Take snapshot of both filesystem and vector db state
             self.resilience_manager.create_snapshot()
+            self.vector_db.create_snapshot()
+            
             LOGGER.info("Snapshot created successfully.")
         except Exception as e:
             LOGGER.exception(f"Snapshot creation failed: {e}")
@@ -802,7 +943,13 @@ class AutonomousAgent:
         try:
             LOGGER.info("Analyzing logs...")
             self.add_system_activity("Log Analysis")
-            self.audit_manager.analyze_log_for_anomalies()
+            
+            # Run analysis tasks in parallel
+            self.task_scheduler.run_tasks([
+                lambda: self.audit_manager.analyze_log_for_anomalies(),
+                lambda: self.monitoring.generate_performance_report(),
+                lambda: self.data_visualizer.generate_activity_visualizations()
+            ])
         except Exception as e:
             LOGGER.exception(f"Log analysis failed: {e}")
 
@@ -819,18 +966,20 @@ class AutonomousAgent:
                 self.active = False
                 return False
 
-        # 2. Core Tasks
+        # 2. Core Tasks - Run in optimized order with parallel execution
         any_activity = False
-        any_activity |= self._run_codebase_enhancement()
+        any_activity |= self._run_security_checks()  # Security first
+        any_activity |= self._run_plugin_tasks()  # Plugin tasks next
         any_activity |= self._run_information_sourcing()
+        any_activity |= self._run_codebase_enhancement()
         any_activity |= self._run_collaborative_processing()
-        any_activity |= self._run_security_checks()
+        
+        # 3. System Maintenance Tasks
         self._analyze_logs()
-
-        # 3. Post-Cycle Operations
         self._perform_snapshot()
         self._push_changes()
 
+        # 4. Post-Cycle Cleanup
         self.clear_system_activities()
         LOGGER.info(f"--- Autonomous Cycle {self.cycle_count + 1} Complete ---")
         self.cycle_count += 1
@@ -839,6 +988,8 @@ class AutonomousAgent:
     def run(self, continuous: bool = True):
         """Runs the autonomous agent."""
         LOGGER.info("Starting Autonomous Knowledge System...")
+        
+        # Validate configuration
         config_errors = config.validate()
         if config_errors:
             for error in config_errors:
@@ -846,34 +997,47 @@ class AutonomousAgent:
             LOGGER.critical("Configuration validation failed. Exiting.")
             return
 
+        # Initial setup
         self._perform_initial_setup()
 
+        # Check AI providers
         if not self.ai_provider_manager.has_available_providers():
             LOGGER.critical("No AI providers available. Check API keys and network connectivity. Exiting.")
             return
 
+        # Single cycle mode
         if not continuous:
             self._run_autonomous_cycle()
             LOGGER.info("Single cycle completed. Exiting.")
             return
 
+        # Continuous operation mode
         try:
             while self.active:
                 start_time = time.time()
+                
                 if not self._run_autonomous_cycle():
                     LOGGER.warning("Autonomous cycle failed. Halting.")
                     self.active = False
                     break
+                    
+                # Calculate sleep time based on cycle duration
                 elapsed_time = time.time() - start_time
                 sleep_time = max(0, config.cycle_interval - elapsed_time)
+                
                 LOGGER.info(f"Cycle completed in {elapsed_time:.2f} seconds. Sleeping for {sleep_time:.2f} seconds.")
                 time.sleep(sleep_time)
+                
         except KeyboardInterrupt:
             LOGGER.info("Shutdown initiated by user.")
         except Exception as e:
             LOGGER.exception(f"An unhandled exception occurred: {e}")
         finally:
+            # Clean shutdown
             LOGGER.info("Shutting down Autonomous Knowledge System...")
+            self.task_scheduler.shutdown()
+            self.vector_db.close()
+            LOGGER.info(f"System was active for {time.time() - self.start_time:.2f} seconds")
 
 # --- UI / Main Execution ---
 def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic, github_token_input, gemini_api_key_input, web_query, ftp_query, run_autonomous_cycle):
@@ -887,6 +1051,8 @@ def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic
         # 1. Configuration Updates (from UI)
         config.github_token = github_token_input
         config.gemini_key = gemini_api_key_input
+        
+        # Update repository info if provided
         if repo_url_input:
             try:
                 repo_owner = repo_url_input.split("/")[-2]
@@ -895,6 +1061,8 @@ def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic
                 LOGGER.info(f"Setting repo owner: {config.repo_owner} and repo name: {config.repo_name}")
             except IndexError:
                 LOGGER.warning("Could not determine repo owner/name from URL. Using default.")
+                
+        # Validate configuration
         config_errors = config.validate()
         if config_errors:
             for error in config_errors:
@@ -904,6 +1072,7 @@ def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic
         # 2. Initialize the Agent
         agent = AutonomousAgent()
         agent._perform_initial_setup()
+        
         if not agent.ai_provider_manager.has_available_providers():
             return log_output, "No AI providers available.", "Check API keys and network."
 
@@ -913,21 +1082,32 @@ def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic
                 with zipfile.ZipFile(user_zip_file.name, 'r') as zip_ref:
                     zip_ref.extractall(config.user_uploads_dir)
                 LOGGER.info(f"Extracted user files to: {config.user_uploads_dir}")
+                
+                # Process the uploaded files
+                agent.task_scheduler.run_task(
+                    lambda: agent.information_sourcing.process_uploaded_files(config.user_uploads_dir)
+                )
             except Exception as e:
                 LOGGER.error(f"Error processing uploaded zip file: {e}")
                 log_output += f"Error processing uploaded zip file: {e}\n"
 
         # 4. Run Pipeline
         if run_autonomous_cycle:
-            agent.run(continuous=True)
+            # Start continuous operation in a separate thread
+            operation_thread = threading.Thread(target=agent.run, kwargs={'continuous': True})
+            operation_thread.daemon = True
+            operation_thread.start()
+            
             log_output = "Autonomous cycle running in the background. Check the logs for status.\n"
         else:
+            # Run single cycle
             agent._run_autonomous_cycle()
             log_output = "Single autonomous cycle completed. Check the logs for status.\n"
 
         # 5. Output Summary
         summary_output = f"AKS cycle completed. Logged to /content/logs/aks.log. Repo: {config.repo_owner}/{config.repo_name}"
         knowledge_output = "Knowledge base updated (check the Git repo)."
+        
     except Exception as e:
         LOGGER.exception(f"Pipeline execution failed: {e}")
         log_output += f"Pipeline execution failed: {e}\n"
@@ -976,6 +1156,7 @@ else:
     LOGGER.warning("Gradio not installed. Running in console-only mode.")
     if __name__ == "__main__":
         LOGGER.info("--- Autonomous Knowledge System (AKS) - Console Mode ---")
+        
         # Get GitHub token securely
         github_token = config.github_token if config.github_token else getpass("Enter your GitHub Personal Access Token (PAT): ")
         config.github_token = github_token
@@ -988,6 +1169,8 @@ else:
         repo_owner = input("Enter GitHub repo owner (or press Enter for default): ") or config.repo_owner
         config.repo_owner = repo_owner
         config.repo_name = input("Enter GitHub repo name (or press Enter for default): ") or config.repo_name
+        
+        # Run the agent
         agent = AutonomousAgent()
         agent.run(continuous=True)
         LOGGER.info("Autonomous Knowledge System (AKS) finished.")
