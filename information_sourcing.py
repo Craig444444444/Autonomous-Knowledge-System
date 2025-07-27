@@ -5,7 +5,7 @@ import time
 import json
 import random
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, unquote
+from urllib.parse import urljoin, urlparse, unquote, parse_qs, urlunparse
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from collections import Counter
@@ -39,6 +39,8 @@ class InformationSourcing:
         self.html_converter.ignore_links = True
         self.html_converter.ignore_images = True
         self.html_converter.ignore_emphasis = True
+        self.last_request_time = 0
+        self.min_request_interval = 1.0  # Minimum seconds between requests
         LOGGER.info("InformationSourcing initialized with enhanced capabilities")
 
     def _is_valid_url(self, url: str, domain_counter: Counter) -> bool:
@@ -53,7 +55,7 @@ class InformationSourcing:
 
             # Domain rotation check
             domain = parsed.netloc
-            if domain_counter[domain] >= self.scraper_config['max_per_domain']:
+            if domain_counter[domain] >= self.scraper_config.get('max_per_domain', 5):
                 LOGGER.debug(f"Domain limit reached for {domain}")
                 return False
 
@@ -70,22 +72,40 @@ class InformationSourcing:
 
     def _is_safe_domain(self, domain: str) -> bool:
         """Check domain against known safe/unsafe lists."""
-        # Basic safety checks (expand with actual security manager integration)
+        # Expanded unsafe patterns
         unsafe_patterns = [
-            r'\.(exe|zip|rar|dmg|pkg)$',
-            r'(malware|phishing|spam|scam)',
-            r'(ad|track|analytics)\..+$',
-            r'\.(ru|su|cn|cc|xyz|info|biz|top)$'  # Suspicious TLDs
+            r'\.(exe|zip|rar|dmg|pkg|apk|bat|cmd|com|msi|jar)$',
+            r'(malware|phishing|spam|scam|exploit|hack)',
+            r'(ad|track|analytics|pixel)\.',
+            r'\.(ru|su|cn|cc|xyz|info|biz|top|pw|icu)$'
         ]
 
         domain_lower = domain.lower()
         return not any(re.search(pattern, domain_lower) for pattern in unsafe_patterns)
+
+    def _clean_url(self, url: str) -> str:
+        """Remove tracking parameters and fragments from URL."""
+        parsed = urlparse(url)
+        # Remove tracking parameters
+        query_dict = parse_qs(parsed.query)
+        filtered_query = {k: v for k, v in query_dict.items() 
+                         if not k.startswith(('utm_', 'fbclid', 'gclid', 'msclkid'))}
+        clean_query = "&".join(f"{k}={v[0]}" for k, v in filtered_query.items() if v)
+        return urlunparse(parsed._replace(query=clean_query, fragment=""))
 
     def scrape_page(self, url: str) -> Tuple[Optional[str], List[str]]:
         """
         Enhanced webpage scraping with better content extraction and error handling.
         Returns (content, links) tuple.
         """
+        # Rate limiting
+        current_time = time.time()
+        elapsed = current_time - self.last_request_time
+        if elapsed < self.min_request_interval:
+            sleep_time = self.min_request_interval - elapsed
+            time.sleep(sleep_time)
+        self.last_request_time = current_time
+
         headers = {
             'User-Agent': self.user_agent.random,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,/;q=0.8',
@@ -96,7 +116,7 @@ class InformationSourcing:
             'DNT': '1'
         }
 
-        for attempt in range(self.scraper_config['max_retries']):
+        for attempt in range(self.scraper_config.get('max_retries', 3)):
             try:
                 # Random delay between requests to avoid rate limiting
                 time.sleep(random.uniform(0.5, 2.5))
@@ -104,7 +124,7 @@ class InformationSourcing:
                 response = self.session.get(
                     url,
                     headers=headers,
-                    timeout=15,
+                    timeout=self.scraper_config.get('timeout', 15),
                     allow_redirects=True
                 )
 
@@ -130,13 +150,15 @@ class InformationSourcing:
                     tag.attrs = {}
 
                 # Improved content extraction using html2text
+                self.html_converter.reset()  # Reset state
                 self.html_converter.handle(soup.prettify())
                 content = self.html_converter.result()
                 content = re.sub(r'\n{3,}', '\n\n', content)  # Reduce excessive newlines
                 content = re.sub(r'\s{2,}', ' ', content).strip()
 
                 # Skip if content is too short
-                if len(content) < self.scraper_config['min_content_length']:
+                min_length = self.scraper_config.get('min_content_length', 200)
+                if len(content) < min_length:
                     LOGGER.debug(f"Content too short at {url}: {len(content)} chars")
                     return None, []
 
@@ -150,25 +172,19 @@ class InformationSourcing:
                         continue
 
                     full_url = urljoin(url, href)
-                    parsed = urlparse(full_url)
-
-                    # Clean URL and remove tracking parameters
-                    clean_url = parsed._replace(
-                        query='',
-                        fragment='',
-                        params=''
-                    ).geturl()
+                    clean_url = self._clean_url(full_url)
+                    parsed = urlparse(clean_url)
 
                     # Only keep links from the same domain or trusted sources
                     if parsed.netloc == base_domain or self._is_trusted_domain(parsed.netloc):
                         links.add(clean_url)
 
                 LOGGER.info(f"Scraped {len(content)} chars from {url}")
-                return content, list(links)[:self.scraper_config['max_links']]
+                return content, list(links)[:self.scraper_config.get('max_links', 15)]
 
             except requests.exceptions.RequestException as e:
                 LOGGER.warning(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
-                time.sleep(self.scraper_config['retry_delay'] * (attempt + 1))
+                time.sleep(self.scraper_config.get('retry_delay', 5) * (attempt + 1))
             except Exception as e:
                 LOGGER.error(f"Unexpected error scraping {url}: {str(e)}")
                 break
@@ -191,7 +207,10 @@ class InformationSourcing:
             'openai.com',
             'python.org',
             'pytorch.org',
-            'tensorflow.org'
+            'tensorflow.org',
+            'ibm.com',
+            'oracle.com',
+            'mozilla.org'
         ]
         return any(trusted in domain for trusted in trusted_domains)
 
@@ -216,7 +235,8 @@ class InformationSourcing:
         for query in search_queries:
             seed_urls = self._search_web(query, num_results=5)
             if seed_urls:
-                queue.extend(seed_urls)
+                # Add with initial depth 0
+                queue.extend([(url, 0) for url in seed_urls])
                 LOGGER.info(f"Added {len(seed_urls)} seed URLs for query: {query}")
             if len(queue) >= max_pages * 2:  # Get enough seeds
                 break
@@ -224,7 +244,7 @@ class InformationSourcing:
         # Process queue with progress tracking
         with tqdm(total=max_pages, desc="Research Progress") as pbar:
             while queue and len(results) < max_pages:
-                url = queue.pop(0)
+                url, current_depth = queue.pop(0)
                 
                 if url in processed_urls:
                     continue
@@ -246,18 +266,21 @@ class InformationSourcing:
                     "content": content,
                     "length": len(content),
                     "timestamp": datetime.now().isoformat(),
-                    "depth": depth - (len(queue) // 5)  # Estimate current depth
+                    "depth": current_depth
                 }
                 results.append(result)
                 processed_urls.add(url)
                 domain_counter[domain] += 1
                 total_content_length += len(content)
 
-                # Add new links to queue if we need more pages
-                if len(results) < max_pages and links:
+                # Add new links to queue if we need more pages and depth allows
+                if (len(results) < max_pages and 
+                    links and 
+                    current_depth < depth):
+                    
                     for link in links:
-                        if link not in processed_urls and link not in queue:
-                            queue.append(link)
+                        if link not in processed_urls and link not in [u for u, _ in queue]:
+                            queue.append((link, current_depth + 1))
                             if len(queue) >= max_pages * 3:  # Don't let queue grow too large
                                 break
 
@@ -346,6 +369,21 @@ class InformationSourcing:
             LOGGER.warning("Google fallback search failed")
             return []
 
+    def _truncate_at_sentence(self, text: str, max_length: int) -> str:
+        """Truncate text at sentence boundary near max_length."""
+        if len(text) <= max_length:
+            return text
+            
+        truncated = text[:max_length]
+        last_period = truncated.rfind('.')
+        last_excl = truncated.rfind('!')
+        last_question = truncated.rfind('?')
+        sentence_end = max(last_period, last_excl, last_question)
+        
+        if sentence_end > 0:
+            return truncated[:sentence_end + 1]
+        return truncated
+
     def get_page_summary(self, url: str) -> Optional[Dict[str, Any]]:
         """Get a structured summary of a webpage."""
         content, _ = self.scrape_page(url)
@@ -353,8 +391,11 @@ class InformationSourcing:
             return None
 
         if self.ai_manager.has_available_providers():
+            # Truncate at sentence boundary
+            truncated_content = self._truncate_at_sentence(content, 5000)
+            
             prompt = (
-                f"Create a structured summary of this webpage content:\n\n{content[:5000]}\n\n"
+                f"Create a structured summary of this webpage content:\n\n{truncated_content}\n\n"
                 "Include key points, main ideas, and important facts."
             )
 
@@ -393,23 +434,37 @@ class InformationSourcing:
             "trust_score": 80 if self._is_trusted_domain(domain) else 40
         }
 
-        # Add domain age check if possible
-        if domain.startswith('www.'):
-            domain = domain[4:]
+        # Add domain age check
         result['domain_age'] = self._estimate_domain_age(domain)
-
         return result
 
     def _estimate_domain_age(self, domain: str) -> Optional[int]:
-        """Estimate domain age using WHOIS (simplified version)"""
+        """Estimate domain age using WHOIS if available."""
         try:
-            # This is a placeholder - in a real system, use python-whois library
-            tld = domain.split('.')[-1]
-            if tld in ['com', 'org', 'net']:
-                return random.randint(1, 20)  # Simulated age
-            return None
+            # Remove www. prefix
+            if domain.startswith('www.'):
+                domain = domain[4:]
+                
+            # Try to use python-whois if installed
+            try:
+                import whois
+                from whois.exceptions import WhoisCommandFailed
+                try:
+                    domain_info = whois.whois(domain)
+                    if domain_info.creation_date:
+                        if isinstance(domain_info.creation_date, list):
+                            create_date = domain_info.creation_date[0]
+                        else:
+                            create_date = domain_info.creation_date
+                        age = (datetime.now() - create_date).days // 365
+                        return max(1, age)
+                except (WhoisCommandFailed, TypeError):
+                    pass
+            except ImportError:
+                pass
         except Exception:
-            return None
+            pass
+        return None
 
     def gather_information(self, topics: List[str] = None, max_pages_per_topic: int = 5) -> None:
         """
@@ -420,7 +475,8 @@ class InformationSourcing:
             return
 
         # Use thread pool for parallel processing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        max_workers = min(3, len(topics))  # Don't exceed number of topics
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for topic in topics:
                 futures.append(
