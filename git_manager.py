@@ -159,6 +159,8 @@ class GitManager:
                     # Handle specific error cases
                     if "safe.directory" in error_msg:
                         LOGGER.warning("Safe directory error detected, applying fallback")
+                        # Set in both environment and current env copy
+                        os.environ['GIT_SAFE_DIRECTORY'] = str(self.repo_path)
                         env['GIT_SAFE_DIRECTORY'] = str(self.repo_path)
                         continue
                     elif "Authentication failed" in error_msg:
@@ -167,6 +169,10 @@ class GitManager:
                     elif "would be overwritten by merge" in error_msg:
                         LOGGER.warning("Merge conflict detected")
                         break
+                    elif "not a git repository" in error_msg:
+                        LOGGER.warning("Git repository not initialized")
+                        self.initialize_repo()
+                        continue
 
                     if attempt < retries:
                         time.sleep(2 ** attempt)  # Exponential backoff
