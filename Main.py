@@ -299,13 +299,17 @@ class Config:
     def validate(self) -> List[str]:
         """Validate configuration and return errors."""
         errors = []
+        # Validate critical configuration
+        required_config_keys = ['repo_path', 'repo_owner', 'repo_name']
+        for key in required_config_keys:
+            if key not in self.__dict__ or not self.__dict__[f"_{key}"]:
+                errors.append(f"Missing required configuration: {key}")
+                
         if not self._github_token:
             errors.append("GitHub token is required for remote repository operations.")
         if "gpt2" not in self._preferred_models or len(self._preferred_models) > 1:
             if not self._gemini_key:
                 errors.append("Gemini API key required unless only using GPT-2 fallback.")
-        if not self._repo_owner or not self._repo_name:
-            errors.append("Repository owner and name are required.")
         return errors
 
     def to_dict(self) -> Dict[str, Any]:
@@ -634,11 +638,7 @@ class AIProviderManager:
                 try:
                     result = generate_method(prompt, system_prompt, max_tokens)
                     if result is not None:
-                        LOGGER.info(f"Generated via {provider.name}")
-                        return result
-                    else:
-                        LOGGER.warning(f"Provider {provider.name} generated empty/None result. Trying next provider.")
-                        continue
+                    return result
                 except Exception as e:
                     LOGGER.warning(f"Provider {provider.name} failed for {method_name}: {e}. Trying next provider.")
                     continue
@@ -677,13 +677,22 @@ class AutonomousAgent:
         # Initialize all core components
         self.ai_provider_manager = AIProviderManager(config.preferred_models)
         self.file_handler = FileHandler(config.repo_path)
-        self.git_manager = GitManager(
-            config.repo_path, 
-            config.github_token, 
-            config.repo_owner, 
-            config.repo_name, 
-            config.repo_url
-        )
+        
+        # Initialize GitManager with error handling
+        self.git_manager = None
+        try:
+            self.git_manager = GitManager(
+                config.repo_path, 
+                config.github_token, 
+                config.repo_owner, 
+                config.repo_name, 
+                config.repo_url
+            )
+            LOGGER.info("GitManager initialized successfully")
+        except Exception as e:
+            LOGGER.error(f"Critical GitManager initialization failed: {e}")
+            # Fallback to minimal functionality
+            LOGGER.warning("Operating without Git functionality - limited capabilities")
         
         # Knowledge and processing components
         self.knowledge_processor = KnowledgeProcessor(config.knowledge_base_dir)
@@ -782,17 +791,18 @@ class AutonomousAgent:
         """Performs initial setup tasks."""
         try:
             # Initialize Git repository if needed
-            if not self.git_manager.is_repo_initialized():
+            if self.git_manager and not self.git_manager.is_repo_initialized():
                 LOGGER.info("Initializing Git repository...")
                 self.git_manager.initialize_repo()
-            else:
+            elif self.git_manager:
                 LOGGER.info("Git repository already initialized.")
 
             # Create initial README if needed
             if not self.file_handler.file_exists("README.md"):
                 LOGGER.info("Creating initial README.md...")
                 self.file_handler.write_file("README.md", f"# {config.repo_name}\n\nAutonomous Knowledge System.")
-                self.git_manager.commit_and_push("Initial README.md creation")
+                if self.git_manager:
+                    self.git_manager.commit_and_push("Initial README.md creation")
             else:
                 LOGGER.info("README.md already exists.")
                 
@@ -812,7 +822,8 @@ class AutonomousAgent:
             LOGGER.info("Archiving old data...")
             self.file_handler.archive_directory(Path("/content/logs"), config.archive_dir / "logs")
             self.file_handler.archive_directory(config.user_feedback_dir, config.archive_dir / "user_feedback")
-            self.resilience_manager.archive_old_snapshots()
+            if self.resilience_manager:
+                self.resilience_manager.archive_old_snapshots()
             LOGGER.info("Archiving completed.")
         except Exception as e:
             LOGGER.exception(f"Archiving failed: {e}")
@@ -833,7 +844,8 @@ class AutonomousAgent:
                 
                 if task_results[0]:  # Code enhancement result
                     LOGGER.info("Codebase enhancement successful.")
-                    self.git_manager.commit_and_push("Enhanced codebase")
+                    if self.git_manager:
+                        self.git_manager.commit_and_push("Enhanced codebase")
                     return True
                 else:
                     LOGGER.info("Codebase enhancement skipped or failed.")
@@ -855,7 +867,8 @@ class AutonomousAgent:
                 ])
                 
                 if results[0]:  # Information gathering result
-                    self.git_manager.commit_and_push("Updated knowledge base from information sourcing")
+                    if self.git_manager:
+                        self.git_manager.commit_and_push("Updated knowledge base from information sourcing")
                     return True
             except Exception as e:
                 LOGGER.exception(f"Information sourcing failed: {e}")
@@ -874,7 +887,8 @@ class AutonomousAgent:
             ])
             
             if results[0]:  # Feedback processing result
-                self.git_manager.commit_and_push("Processed User Feedback")
+                if self.git_manager:
+                    self.git_manager.commit_and_push("Processed User Feedback")
                 return True
         except Exception as e:
             LOGGER.exception(f"Collaborative processing failed: {e}")
@@ -920,7 +934,8 @@ class AutonomousAgent:
             self.add_system_activity("Snapshot Creation")
             
             # Take snapshot of both filesystem and vector db state
-            self.resilience_manager.create_snapshot()
+            if self.resilience_manager:
+                self.resilience_manager.create_snapshot()
             self.vector_db.create_snapshot()
             
             LOGGER.info("Snapshot created successfully.")
@@ -930,7 +945,7 @@ class AutonomousAgent:
     def _push_changes(self):
         """Pushes local changes to the remote repository."""
         try:
-            if time.time() - self.last_push_time > config.push_interval:
+            if self.git_manager and time.time() - self.last_push_time > config.push_interval:
                 LOGGER.info("Pushing changes to remote repository...")
                 self.add_system_activity("Pushing Changes")
                 self.git_manager.push_changes()
@@ -998,13 +1013,13 @@ class AutonomousAgent:
             LOGGER.critical("Configuration validation failed. Exiting.")
             return
 
-        # Initial setup
-        self._perform_initial_setup()
-
         # Check AI providers
         if not self.ai_provider_manager.has_available_providers():
             LOGGER.critical("No AI providers available. Check API keys and network connectivity. Exiting.")
             return
+
+        # Initial setup
+        self._perform_initial_setup()
 
         # Single cycle mode
         if not continuous:
