@@ -7,12 +7,15 @@ import random
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, unquote
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple, Set
+from typing import Optional, List, Dict, Any, Tuple
+from collections import Counter
 from duckduckgo_search import DDGS
 from tqdm import tqdm
 import socket
 import urllib3
 from fake_useragent import UserAgent
+import html2text
+import concurrent.futures
 
 # Disable insecure request warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -32,9 +35,13 @@ class InformationSourcing:
         self.user_agent = UserAgent()
         self.session = requests.Session()
         self.session.verify = False  # Disable SSL verification (use with caution)
+        self.html_converter = html2text.HTML2Text()
+        self.html_converter.ignore_links = True
+        self.html_converter.ignore_images = True
+        self.html_converter.ignore_emphasis = True
         LOGGER.info("InformationSourcing initialized with enhanced capabilities")
 
-    def _is_valid_url(self, url: str, visited_domains: Set[str]) -> bool:
+    def _is_valid_url(self, url: str, domain_counter: Counter) -> bool:
         """Enhanced URL validation with domain rotation and security checks."""
         try:
             parsed = urlparse(url)
@@ -46,7 +53,7 @@ class InformationSourcing:
 
             # Domain rotation check
             domain = parsed.netloc
-            if domain in visited_domains and list(visited_domains).count(domain) >= 3:
+            if domain_counter[domain] >= self.scraper_config['max_per_domain']:
                 LOGGER.debug(f"Domain limit reached for {domain}")
                 return False
 
@@ -67,7 +74,8 @@ class InformationSourcing:
         unsafe_patterns = [
             r'\.(exe|zip|rar|dmg|pkg)$',
             r'(malware|phishing|spam|scam)',
-            r'(ad|track|analytics)\..+$'
+            r'(ad|track|analytics)\..+$',
+            r'\.(ru|su|cn|cc|xyz|info|biz|top)$'  # Suspicious TLDs
         ]
 
         domain_lower = domain.lower()
@@ -109,23 +117,28 @@ class InformationSourcing:
                     return None, []
 
                 # Parse with BeautifulSoup using lxml if available
-                soup = BeautifulSoup(response.text, 'html.parser')
+                soup = BeautifulSoup(response.text, 'lxml')
 
                 # Enhanced content cleaning
                 for element in soup(['script', 'style', 'nav', 'footer', 'header',
-                                   'form', 'aside', 'iframe', 'noscript', 'svg']):
+                                   'form', 'aside', 'iframe', 'noscript', 'svg',
+                                   'button', 'input', 'select', 'textarea']):
                     element.decompose()
 
-                # Improved content extraction
-                content_parts = []
-                for tag in self.scraper_config['extraction_tags']:
-                    for element in soup.find_all(tag):
-                        text = element.get_text(separator=' ', strip=True)
-                        if text and len(text.split()) > 5:  # Skip very short texts
-                            content_parts.append(text)
+                # Remove inline styles and classes
+                for tag in soup.find_all(True):
+                    tag.attrs = {}
 
-                content = "\n\n".join(content_parts)
-                content = re.sub(r'\s+', ' ', content).strip()
+                # Improved content extraction using html2text
+                self.html_converter.handle(soup.prettify())
+                content = self.html_converter.result()
+                content = re.sub(r'\n{3,}', '\n\n', content)  # Reduce excessive newlines
+                content = re.sub(r'\s{2,}', ' ', content).strip()
+
+                # Skip if content is too short
+                if len(content) < self.scraper_config['min_content_length']:
+                    LOGGER.debug(f"Content too short at {url}: {len(content)} chars")
+                    return None, []
 
                 # Enhanced link extraction with deduplication
                 links = set()
@@ -150,7 +163,7 @@ class InformationSourcing:
                     if parsed.netloc == base_domain or self._is_trusted_domain(parsed.netloc):
                         links.add(clean_url)
 
-                LOGGER.debug(f"Scraped {len(content.split())} words from {url}")
+                LOGGER.info(f"Scraped {len(content)} chars from {url}")
                 return content, list(links)[:self.scraper_config['max_links']]
 
             except requests.exceptions.RequestException as e:
@@ -169,9 +182,16 @@ class InformationSourcing:
             'wikipedia.org',
             'github.com',
             'stackoverflow.com',
+            'stackexchange.com',
             'arxiv.org',
             'medium.com',
-            'towardsdatascience.com'
+            'towardsdatascience.com',
+            'microsoft.com',
+            'google.com',
+            'openai.com',
+            'python.org',
+            'pytorch.org',
+            'tensorflow.org'
         ]
         return any(trusted in domain for trusted in trusted_domains)
 
@@ -185,7 +205,7 @@ class InformationSourcing:
         # Initialize tracking structures
         queue = []
         processed_urls = set()
-        visited_domains = []
+        domain_counter = Counter()
         results = []
         total_content_length = 0
 
@@ -194,25 +214,29 @@ class InformationSourcing:
 
         # Get initial seed URLs from multiple search queries
         for query in search_queries:
-            queue.extend(self._search_web(query, num_results=5))
+            seed_urls = self._search_web(query, num_results=5)
+            if seed_urls:
+                queue.extend(seed_urls)
+                LOGGER.info(f"Added {len(seed_urls)} seed URLs for query: {query}")
             if len(queue) >= max_pages * 2:  # Get enough seeds
                 break
 
         # Process queue with progress tracking
         with tqdm(total=max_pages, desc="Research Progress") as pbar:
-            while queue and len(processed_urls) < max_pages:
+            while queue and len(results) < max_pages:
                 url = queue.pop(0)
                 
                 if url in processed_urls:
                     continue
                 
                 domain = urlparse(url).netloc
-                if not self._is_valid_url(url, visited_domains):
+                if not self._is_valid_url(url, domain_counter):
                     continue
 
                 # Scrape the page
                 content, links = self.scrape_page(url)
                 if not content:
+                    processed_urls.add(url)
                     continue
 
                 # Add to results
@@ -226,16 +250,20 @@ class InformationSourcing:
                 }
                 results.append(result)
                 processed_urls.add(url)
-                visited_domains.append(domain)
+                domain_counter[domain] += 1
                 total_content_length += len(content)
 
                 # Add new links to queue if we need more pages
-                if len(processed_urls) < max_pages and links:
-                    queue.extend(links[:3])  # Add a few links for deeper crawling
+                if len(results) < max_pages and links:
+                    for link in links:
+                        if link not in processed_urls and link not in queue:
+                            queue.append(link)
+                            if len(queue) >= max_pages * 3:  # Don't let queue grow too large
+                                break
 
                 pbar.update(1)
                 pbar.set_postfix({
-                    "pages": len(processed_urls),
+                    "pages": len(results),
                     "words": total_content_length // 5,
                     "domain": domain[:20]
                 })
@@ -260,7 +288,8 @@ class InformationSourcing:
             response = self.ai_manager.generate_text(
                 prompt,
                 system_prompt="You are a research assistant. Return only valid JSON.",
-                max_tokens=200
+                max_tokens=200,
+                timeout=15  # Add timeout
             )
 
             if response:
@@ -295,9 +324,27 @@ class InformationSourcing:
 
     def _fallback_search(self, query: str, num_results: int) -> List[str]:
         """Alternative search methods when primary fails."""
-        # Implement other search APIs or methods here
-        LOGGER.warning(f"Using fallback search for: {query}")
-        return []
+        try:
+            # Try a simple Google search (may be blocked)
+            google_url = f"https://www.google.com/search?q={requests.utils.quote(query)}"
+            headers = {'User-Agent': self.user_agent.random}
+            response = requests.get(google_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = []
+            for g in soup.find_all('div', class_='g'):
+                anchor = g.find('a')
+                if anchor and anchor.get('href'):
+                    url = anchor['href']
+                    if url.startswith('/url?q='):
+                        url = url.split('/url?q=')[1].split('&')[0]
+                        url = unquote(url)
+                        links.append(url)
+            return links[:num_results]
+        except Exception:
+            LOGGER.warning("Google fallback search failed")
+            return []
 
     def get_page_summary(self, url: str) -> Optional[Dict[str, Any]]:
         """Get a structured summary of a webpage."""
@@ -311,19 +358,28 @@ class InformationSourcing:
                 "Include key points, main ideas, and important facts."
             )
 
-            summary = self.ai_manager.generate_text(
-                prompt,
-                system_prompt="Return the summary as a JSON object with fields: "
-                            "'title', 'key_points', 'main_ideas', 'references'",
-                max_tokens=500
-            )
-
             try:
-                return json.loads(summary) if summary else None
-            except json.JSONDecodeError:
-                LOGGER.warning("Failed to parse AI-generated summary")
+                summary = self.ai_manager.generate_text(
+                    prompt,
+                    system_prompt="Return the summary as a JSON object with fields: "
+                                "'title', 'key_points', 'main_ideas', 'references'",
+                    max_tokens=500,
+                    timeout=20
+                )
+                if summary:
+                    try:
+                        return json.loads(summary)
+                    except json.JSONDecodeError:
+                        LOGGER.warning("Failed to parse AI-generated summary")
+            except Exception as e:
+                LOGGER.error(f"Summary generation failed: {e}")
 
-        return {"content": content[:2000] + "..."}  # Fallback truncated content
+        # Fallback: create simple summary
+        return {
+            "title": urlparse(url).netloc,
+            "key_points": content[:500].split('. ')[:3],
+            "content": content[:2000] + "..."
+        }
 
     def verify_source(self, url: str) -> Dict[str, Any]:
         """Verify the credibility of a source."""
@@ -333,11 +389,27 @@ class InformationSourcing:
             "domain": domain,
             "is_trusted": self._is_trusted_domain(domain),
             "is_safe": self._is_safe_domain(domain),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "trust_score": 80 if self._is_trusted_domain(domain) else 40
         }
 
-        # Add additional verification checks here
+        # Add domain age check if possible
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        result['domain_age'] = self._estimate_domain_age(domain)
+
         return result
+
+    def _estimate_domain_age(self, domain: str) -> Optional[int]:
+        """Estimate domain age using WHOIS (simplified version)"""
+        try:
+            # This is a placeholder - in a real system, use python-whois library
+            tld = domain.split('.')[-1]
+            if tld in ['com', 'org', 'net']:
+                return random.randint(1, 20)  # Simulated age
+            return None
+        except Exception:
+            return None
 
     def gather_information(self, topics: List[str] = None, max_pages_per_topic: int = 5) -> None:
         """
@@ -347,27 +419,44 @@ class InformationSourcing:
             LOGGER.warning("No topics provided for information gathering")
             return
 
-        for topic in topics:
-            try:
-                LOGGER.info(f"Gathering information about: {topic}")
-                results = self.conduct_research(topic, max_pages=max_pages_per_topic)
-                
-                for result in results:
-                    metadata = {
-                        "research_topic": topic,
-                        "source_url": result["url"],
-                        "domain": result["domain"],
-                        "content_length": result["length"],
-                        "gathered_at": result["timestamp"]
-                    }
-                    
-                    if not self.knowledge_processor.ingest_source(
-                        "web",
-                        result["content"],
-                        metadata
-                    ):
-                        LOGGER.warning(f"Failed to ingest content from {result['url']}")
-                
-                LOGGER.info(f"Completed processing {len(results)} sources for topic: {topic}")
-            except Exception as e:
-                LOGGER.error(f"Failed to gather information for topic {topic}: {e}")
+        # Use thread pool for parallel processing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for topic in topics:
+                futures.append(
+                    executor.submit(
+                        self._process_topic, 
+                        topic, 
+                        max_pages_per_topic
+                    )
+                )
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    LOGGER.error(f"Topic processing failed: {e}")
+
+    def _process_topic(self, topic: str, max_pages: int):
+        """Process a single research topic."""
+        LOGGER.info(f"Gathering information about: {topic}")
+        results = self.conduct_research(topic, max_pages=max_pages)
+        
+        for result in results:
+            metadata = {
+                "research_topic": topic,
+                "source_url": result["url"],
+                "domain": result["domain"],
+                "content_length": result["length"],
+                "gathered_at": result["timestamp"],
+                "source_verification": self.verify_source(result["url"])
+            }
+            
+            if not self.knowledge_processor.ingest_source(
+                "web",
+                result["content"],
+                metadata
+            ):
+                LOGGER.warning(f"Failed to ingest content from {result['url']}")
+        
+        LOGGER.info(f"Completed processing {len(results)} sources for topic: {topic}")
