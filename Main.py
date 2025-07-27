@@ -139,7 +139,8 @@ try:
     from data_visualizer import DataVisualizer
     from version_migrator import VersionMigrator
     from documentation_generator import DocumentationGenerator
-    from testing_framework import TestingFramework
+    # FIXED IMPORT: Use alias to resolve TestingFramework
+    from testing_framework import AKSTestRunner as TestingFramework
     from agent_orchestrator import AgentOrchestrator
     from vector_db import VectorDB
 except ImportError as e:
