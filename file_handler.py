@@ -12,16 +12,13 @@ import re
 
 # SAFE DOCX IMPORT FIX
 try:
-    # Attempt to import Document normally
     from docx import Document
 except ImportError:
     try:
-        # Try alternative import for older versions
         from docx.api import Document
     except ImportError:
-        # Final fallback if both imports fail
         Document = None
-        logging.warning("docx module not available - DOCX extraction disabled")
+        logging.warning("docx module not available - DOCX extraction will be limited")
 
 LOGGER = logging.getLogger("aks")
 
