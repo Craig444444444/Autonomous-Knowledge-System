@@ -1,1 +1,177 @@
-debuggn
+colab front end
+
+# =========================================================
+# 🚀 Autonomous Knowledge System - Self-Enhancement & Auto-Commit (FINAL FIX)
+# Copy-Paste in Google Colab and Run Once
+# =========================================================
+
+# --- 1. Install Dependencies ---
+!pip install -q google-generativeai gitpython requests pygithub html2text markdownify duckduckgo-search
+!pip install -q pyfiglet transformers torch python-dateutil beautifulsoup4 tqdm gitpython gradio html2text markdownify duckduckgo-search langchain openai sentence-transformers fake-useragent PyPDF2 python-docx autopep8
+!sudo apt-get install -y git-lfs
+
+# --- 2. Authenticate with GitHub ---
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os, sys, pathlib, subprocess, re
+from getpass import getpass
+
+print("\n=== 🔑 GitHub Authentication ===")
+try:
+    github_token = getpass("Enter GitHub PAT (classic): ")
+except Exception:
+    github_token = input("Enter GitHub PAT (classic): ")
+gemini_key = input("Enter Gemini API Key (optional): ") or ""
+os.environ["GITHUB_TOKEN"] = github_token
+if gemini_key: os.environ["GEMINI_API_KEY"] = gemini_key
+
+# --- 3. Clone Repository ---
+repo_url = "https://github.com/Craig444444444/Autonomous-Knowledge-System.git"
+print("\n=== 🔍 Cloning Repository ===")
+if os.path.exists("AKS-Repo"): subprocess.run(["rm", "-rf", "AKS-Repo"])
+clone_result = subprocess.run(["git", "clone", repo_url, "AKS-Repo"], capture_output=True, text=True)
+if clone_result.returncode != 0:
+    print("❌ Git clone failed:", clone_result.stderr)
+    raise SystemExit("Stopping execution")
+os.chdir("AKS-Repo")
+current_dir = pathlib.Path().resolve()
+print(f"✓ Repo cloned at {current_dir}")
+
+# --- 4. Apply Critical Fixes ---
+print("\n=== 🔧 Applying Fixes ===")
+module_dir = None
+for path in current_dir.rglob("Main.py"):
+    module_dir = path.parent
+    break
+if not module_dir:
+    raise FileNotFoundError("❌ Main.py not found")
+
+sys.path.insert(0, str(module_dir))
+
+# ✅ Fix codebase_enhancer.py typing imports
+enhancer_path = module_dir / "codebase_enhancer.py"
+if enhancer_path.exists():
+    content = enhancer_path.read_text()
+    if not content.startswith("from typing import"):
+        required_imports = "from typing import Any, Dict, List, Tuple, Union\nfrom pathlib import Path\n"
+        enhancer_path.write_text(required_imports + content)
+        print("✓ Fixed typing imports in codebase_enhancer.py")
+
+# ✅ Fix file_handler.py docx import (preserve indentation)
+file_handler_path = module_dir / "file_handler.py"
+if file_handler_path.exists():
+    content = file_handler_path.read_text()
+    content = re.sub(
+        r'^(\s*)from docx import Document',
+        r"\1try:\n\1    from docx import Document\n\1except ImportError:\n\1    Document = None\n\1    print('Warning: docx module not available')",
+        content,
+        flags=re.MULTILINE
+    )
+    file_handler_path.write_text(content)
+    print("✓ Patched docx import in file_handler.py")
+
+# ✅ Fix monitoring.py class name
+monitoring_path = module_dir / "monitoring.py"
+if monitoring_path.exists():
+    content = monitoring_path.read_text()
+    if "class SystemMonitor" in content:
+        monitoring_path.write_text(content.replace("class SystemMonitor", "class Monitoring"))
+        print("✓ Renamed SystemMonitor to Monitoring")
+
+# --- 5. Add Missing Methods Dynamically ---
+print("\n=== 🛠 Adding Missing Methods (if needed) ===")
+missing_methods_code = '''
+def copy_file(self, src, dst):
+    import shutil
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except Exception as e:
+        print(f"copy_file failed: {e}")
+        return False
+
+def move_file(self, src, dst):
+    import shutil
+    try:
+        shutil.move(src, dst)
+        return True
+    except Exception as e:
+        print(f"move_file failed: {e}")
+        return False
+'''
+with open(file_handler_path, "a") as f:
+    f.write("\n" + missing_methods_code)
+print("✓ Added copy_file and move_file to FileHandler")
+
+# --- 6. Clear Python Cache ---
+for mod in ['Main', 'codebase_enhancer', 'file_handler', 'monitoring']:
+    if mod in sys.modules: del sys.modules[mod]
+
+# --- 7. Import Modules ---
+print("\n=== 🔍 Importing Modules ===")
+try:
+    from Main import AutonomousAgent, config
+    from git_manager import GitManager
+    from codebase_enhancer import CodebaseEnhancer
+    from resilience_manager import ResilienceManager
+    from file_handler import FileHandler
+    from knowledge_processor import KnowledgeProcessor
+    from information_sourcing import InformationSourcing
+    from monitoring import Monitoring
+    print("✓ All modules imported successfully")
+except Exception as e:
+    print("❌ Import failed:", e)
+    raise
+
+# --- 8. Initialize Components ---
+print("\nInitializing AKS system...")
+agent = AutonomousAgent()
+git_manager = GitManager(config.repo_path, os.environ["GITHUB_TOKEN"], config.repo_owner, config.repo_name, config.repo_url)
+enhancer = CodebaseEnhancer(agent.ai_generator)
+resilience = ResilienceManager(config.repo_path, config.snapshot_dir, config.max_snapshots)
+file_handler = FileHandler(config.repo_path)
+monitor = Monitoring({})
+
+# --- 9. Self-Enhancement Workflow ---
+print("\n=== 🚀 Starting Self-Enhancement ===")
+def self_enhance_and_push():
+    monitor.start_monitoring(interval=30)
+    resilience.create_snapshot()
+    target_files = ["Main.py","git_manager.py","codebase_enhancer.py","resilience_manager.py","file_handler.py","knowledge_processor.py","information_sourcing.py","monitoring.py"]
+    for f in target_files:
+        fp = module_dir / f
+        print(f"Enhancing {f}...")
+        backup = str(fp)+".bak"
+        file_handler.copy_file(fp, backup)
+        if not enhancer.enhance_code(str(fp)):
+            print("Enhancement failed, restoring original")
+            file_handler.move_file(backup, fp)
+    try:
+        for f in target_files:
+            subprocess.run(["python","-m","py_compile",str(module_dir/f)],check=True)
+        print("✓ Syntax OK")
+        git_manager.commit_and_push("Self-enhancement: Optimized core modules")
+        print("✓ Changes pushed")
+        return True
+    except Exception as e:
+        print("❌ Validation failed:",e)
+        resilience.restore_latest_snapshot()
+        return False
+    finally:
+        monitor.stop_monitoring()
+
+success = self_enhance_and_push()
+
+# --- 10. README Tag ---
+if success:
+    readme = pathlib.Path("README.md")
+    if readme.exists():
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(readme,'a') as f:
+            f.write(f"\n\n<!-- AUTO-RUN SUCCESS -->\n**Last Successful Auto-Run**: `{now}`\n")
+        git_manager.commit_and_push("docs: Update README with latest auto-run status")
+        print("✓ README updated")
+else:
+    print("System restored to previous state")
