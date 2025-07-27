@@ -86,6 +86,8 @@ class FileHandler:
     def write_file(self, relative_path: str, content: str) -> bool:
         """Write content to a file with validation and atomic writes."""
         path = self.base_path / relative_path
+        temp_path = None  # Initialize temp_path variable
+        
         try:
             # Validate file extension
             if path.suffix not in self.supported_extensions:
@@ -117,7 +119,7 @@ class FileHandler:
             return True
         except Exception as e:
             LOGGER.error(f"Error writing {relative_path}: {e}")
-            if temp_path.exists():
+            if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
             return False
 
