@@ -3,7 +3,7 @@ import shutil
 import os
 import zipfile
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional
 import PyPDF2
 from datetime import datetime
 import json
@@ -11,171 +11,232 @@ import ast
 import re
 
 # SAFE DOCX IMPORT FIX
+# This block is now correctly indented, resolving the IndentationError.
 try:
     from docx import Document
 except ImportError:
+    # This fallback ensures the program can run even if python-docx is not installed.
     Document = None
-    logging.warning("docx module not available - DOCX extraction will be limited")
+    logging.warning("python-docx module not available - DOCX extraction will be limited.")
 
+# It's good practice to get a logger specific to your module/application.
 LOGGER = logging.getLogger("aks")
 
 
 class FileHandler:
-    """Enhanced file handler with multi-format support and security features."""
+    """
+    Enhanced file handler with multi-format support, atomic writes, and security features.
+    - Reads text from .txt, .py, .md, .json, .pdf, and .docx.
+    - Writes only to safe, text-based formats (.txt, .py, .md, .json).
+    - Includes features for atomic writes, backups on deletion, and directory archiving.
+    """
     def __init__(self, base_path: Path):
+        """
+        Initializes the FileHandler with a base directory.
+        Args:
+            base_path (Path): The root directory for all file operations.
+        """
         self.base_path = base_path
-        self.supported_extensions = ['.txt', '.py', '.md', '.pdf', '.docx', '.json']
-        LOGGER.info(f"FileHandler initialized at {base_path}")
+        # Supported extensions for READING
+        self.supported_read_extensions = ['.txt', '.py', '.md', '.pdf', '.docx', '.json']
+        # Supported extensions for WRITING
+        self.supported_write_extensions = ['.txt', '.py', '.md', '.json']
+        LOGGER.info(f"FileHandler initialized at base path: {self.base_path}")
 
     def file_exists(self, relative_path: str) -> bool:
-        return (self.base_path / relative_path).exists()
+        """Checks if a file exists relative to the base path."""
+        return (self.base_path / relative_path).is_file()
 
     def read_file(self, relative_path: str) -> Optional[str]:
-        """Read a file with automatic encoding detection and format handling."""
+        """
+        Reads a file with automatic format handling and robust encoding detection.
+        Args:
+            relative_path (str): The path to the file relative to the base directory.
+        Returns:
+            Optional[str]: The file content as a string, or None if reading fails.
+        """
         path = self.base_path / relative_path
-        if not path.exists():
-            LOGGER.warning(f"File not found: {relative_path}")
+        if not self.file_exists(relative_path):
+            LOGGER.warning(f"File not found: {path}")
             return None
 
         try:
-            # Handle different file formats
+            # Handle different file formats based on their extension.
             if path.suffix == '.pdf':
                 return self._read_pdf(path)
             elif path.suffix == '.docx':
                 return self._read_docx(path)
-            # Removed special JSON handling - treat as text file
             else:
-                # Try different encodings for text files
+                # For plain text files (including .json), try multiple common encodings.
                 for encoding in ['utf-8', 'latin-1', 'iso-8859-1']:
                     try:
                         with open(path, 'r', encoding=encoding) as f:
                             return f.read()
                     except UnicodeDecodeError:
                         continue
-                LOGGER.error(f"Failed to decode {relative_path} with common encodings")
+                LOGGER.error(f"Failed to decode '{relative_path}' with any common encoding.")
                 return None
         except Exception as e:
-            LOGGER.error(f"Error reading {relative_path}: {e}")
+            LOGGER.error(f"Error reading file '{relative_path}': {e}", exc_info=True)
             return None
 
     def _read_pdf(self, path: Path) -> Optional[str]:
-        """Extract text from PDF files."""
+        """Helper method to extract text from PDF files."""
         try:
+            text_parts = []
             with open(path, 'rb') as f:
                 reader = PyPDF2.PdfReader(f)
-                text = "\n".join(page.extract_text() for page in reader.pages)
-                return text
+                for page in reader.pages:
+                    extracted_text = page.extract_text()
+                    if extracted_text:
+                        text_parts.append(extracted_text)
+            return "\n".join(text_parts)
         except Exception as e:
-            LOGGER.error(f"PDF extraction failed: {e}")
+            LOGGER.error(f"PDF extraction failed for '{path}': {e}", exc_info=True)
             return None
 
     def _read_docx(self, path: Path) -> Optional[str]:
-        """Extract text from DOCX files."""
+        """Helper method to extract text from DOCX files."""
         if Document is None:
-            LOGGER.warning("docx module not available, cannot read DOCX files")
+            LOGGER.warning("Cannot read DOCX file because python-docx is not installed.")
             return None
         try:
             doc = Document(path)
+            # Extracts text from all paragraphs in the document body.
             return "\n".join(para.text for para in doc.paragraphs)
         except Exception as e:
-            LOGGER.error(f"DOCX extraction failed: {e}")
+            LOGGER.error(f"DOCX extraction failed for '{path}': {e}", exc_info=True)
             return None
 
     def write_file(self, relative_path: str, content: str) -> bool:
-        """Write content to a file with validation and atomic writes."""
+        """
+        Writes content to a text-based file using an atomic operation.
+        This prevents file corruption if the write is interrupted.
+        Args:
+            relative_path (str): The path for the file to be written.
+            content (str): The string content to write to the file.
+        Returns:
+            bool: True on success, False on failure.
+        """
         path = self.base_path / relative_path
-        temp_path = None  # Initialize temp_path variable
-        
-        # Only allow writing to text-based formats
-        writable_extensions = ['.txt', '.py', '.md', '.json']
         
         try:
-            # Validate file extension against writable formats
-            if path.suffix not in writable_extensions:
-                LOGGER.error(f"Writing to '{path.suffix}' format is not supported. Only text-based formats allowed.")
+            # 1. Validate file extension to prevent writing to binary formats like .pdf
+            if path.suffix not in self.supported_write_extensions:
+                LOGGER.error(f"Write error: '{path.suffix}' is not a supported text format.")
                 return False
 
-            # Validate content size
-            if len(content) > 10 * 1024 * 1024:  # 10MB
-                LOGGER.error("File content exceeds size limit (10MB)")
+            # 2. Validate content size to prevent accidentally writing huge files.
+            if len(content.encode('utf-8')) > 10 * 1024 * 1024:  # 10MB limit
+                LOGGER.error(f"Write error: Content for '{relative_path}' exceeds 10MB size limit.")
                 return False
+            
+            # Create parent directories if they don't exist
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Write to temp file first
-            temp_path = path.with_suffix('.tmp')
+            # 3. Atomic Write: Write to a temporary file first.
+            temp_path = path.with_suffix(f"{path.suffix}.tmp")
             with open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            # Validate content (basic check)
+            # 4. Validate content if it's a Python file.
             if path.suffix == '.py':
                 try:
                     ast.parse(content)
                 except SyntaxError as e:
-                    LOGGER.error(f"Invalid Python syntax: {e}")
-                    os.remove(temp_path)
+                    LOGGER.error(f"Invalid Python syntax in '{relative_path}': {e}")
+                    os.remove(temp_path)  # Clean up the invalid temp file
                     return False
 
-            # Replace original file
+            # 5. If all checks pass, replace the original file with the new one.
             os.replace(temp_path, path)
-            LOGGER.info(f"Successfully wrote {relative_path}")
+            LOGGER.info(f"Successfully wrote to '{relative_path}'")
             return True
         except Exception as e:
-            LOGGER.error(f"Error writing {relative_path}: {e}")
-            if temp_path and os.path.exists(temp_path):
+            LOGGER.error(f"Error writing to '{relative_path}': {e}", exc_info=True)
+            # Clean up temp file on any failure
+            if 'temp_path' in locals() and temp_path.exists():
                 os.remove(temp_path)
             return False
 
     def delete_file(self, relative_path: str) -> bool:
-        """Securely delete a file with backup."""
+        """
+        Deletes a file, creating a backup first.
+        Args:
+            relative_path (str): The path of the file to delete.
+        Returns:
+            bool: True on success, False if the file doesn't exist or on error.
+        """
         path = self.base_path / relative_path
-        if not path.exists():
+        if not self.file_exists(relative_path):
+            LOGGER.warning(f"Delete failed: File '{path}' does not exist.")
             return False
 
         try:
-            # Create backup before deletion
-            backup_dir = self.base_path / "deleted_backups"
+            # Create a dedicated directory for backups.
+            backup_dir = self.base_path / "_deleted_backups"
             backup_dir.mkdir(exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Robust path sanitization for both Windows and Unix
+            # Sanitize the filename to be cross-platform safe for the backup copy.
             sanitized_name = str(relative_path).replace('/', '_').replace('\\', '_')
             backup_path = backup_dir / f"{sanitized_name}_{timestamp}"
             
             shutil.copy(path, backup_path)
 
-            # Delete original
+            # Delete the original file.
             path.unlink()
-            LOGGER.info(f"Deleted {relative_path} (backup at {backup_path})")
+            LOGGER.info(f"Deleted '{relative_path}' (backup saved to '{backup_path}')")
             return True
         except Exception as e:
-            LOGGER.error(f"Error deleting {relative_path}: {e}")
+            LOGGER.error(f"Error deleting '{relative_path}': {e}", exc_info=True)
             return False
 
-    def archive_directory(self, source_dir: Path, target_dir: Path) -> bool:
-        """Archive a directory to zip file using pathlib."""
+    def archive_directory(self, source_relative_path: str, target_relative_path: str) -> Optional[Path]:
+        """
+        Archives a directory into a zip file.
+        Args:
+            source_relative_path (str): The relative path of the directory to archive.
+            target_relative_path (str): The relative path where the zip file will be saved.
+        Returns:
+            Optional[Path]: The path to the created zip file, or None on failure.
+        """
+        source_dir = self.base_path / source_relative_path
+        target_dir = self.base_path / target_relative_path
+
+        if not source_dir.is_dir():
+            LOGGER.error(f"Archive failed: Source '{source_dir}' is not a valid directory.")
+            return None
+
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d")
-            zip_path = target_dir / f"archive_{timestamp}.zip"
+            zip_path = target_dir / f"archive_{source_dir.name}_{timestamp}.zip"
 
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Use pathlib for consistent directory traversal
+                # Use pathlib's rglob for a clean, recursive file search.
                 for file_path in source_dir.rglob('*'):
                     if file_path.is_file():
-                        # Get relative path within source_dir
-                        arcname = file_path.relative_to(source_dir)
-                        zipf.write(file_path, arcname)
+                        zipf.write(file_path, file_path.relative_to(source_dir))
 
-            LOGGER.info(f"Archived {source_dir} to {zip_path}")
-            return True
+            LOGGER.info(f"Successfully archived '{source_dir}' to '{zip_path}'")
+            return zip_path
         except Exception as e:
-            LOGGER.error(f"Archive failed: {e}")
-            return False
+            LOGGER.error(f"Archive failed for '{source_dir}': {e}", exc_info=True)
+            return None
 
     def sanitize_filename(self, filename: str) -> str:
-        """Sanitize filenames to prevent path traversal and injection."""
-        # Remove directory paths
+        """
+        Sanitizes a filename to remove dangerous characters and path information.
+        Args:
+            filename (str): The original filename.
+        Returns:
+            str: A sanitized, safe filename.
+        """
+        # 1. Strip any directory path to prevent path traversal attacks (e.g., "../../etc/passwd")
         clean_name = os.path.basename(filename)
-        # Remove potentially dangerous characters
-        clean_name = re.sub(r'[\\/*?:"<>|]', "", clean_name)
-        # Limit length
+        # 2. Remove characters that are illegal in Windows/Linux filesystems.
+        clean_name = re.sub(r'[<>:"/\\|?*]', '_', clean_name)
+        # 3. Limit the length of the filename to a reasonable maximum.
         return clean_name[:255]
+
