@@ -300,16 +300,17 @@ class Config:
         """Validate configuration and return errors."""
         errors = []
         # Validate critical configuration
-        required_config_keys = ['repo_path', 'repo_owner', 'repo_name']
-        for key in required_config_keys:
-            if key not in self.__dict__ or not self.__dict__[f"_{key}"]:
-                errors.append(f"Missing required configuration: {key}")
+        if not self._repo_owner:
+            errors.append("Missing required configuration: repo_owner")
+        if not self._repo_name:
+            errors.append("Missing required configuration: repo_name")
+        if not self._repo_path:
+            errors.append("Missing required configuration: repo_path")
                 
         if not self._github_token:
             errors.append("GitHub token is required for remote repository operations.")
-        if "gpt2" not in self._preferred_models or len(self._preferred_models) > 1:
-            if not self._gemini_key:
-                errors.append("Gemini API key required unless only using GPT-2 fallback.")
+        if "gpt2" not in self._preferred_models and not self._gemini_key:
+            errors.append("Gemini API key required unless only using GPT-2 fallback.")
         return errors
 
     def to_dict(self) -> Dict[str, Any]:
@@ -342,7 +343,7 @@ class Config:
 
 config = Config()
 
-# LOGGING SYSTEM (unchanged from previous version)
+# LOGGING SYSTEM
 class ColoredFormatter(logging.Formatter):
     """Custom colored formatter for console output."""
     COLORS = {'DEBUG': '\033[36m', 'INFO': '\033[32m', 'WARNING': '\033[33m', 
@@ -403,7 +404,7 @@ class LogManager:
 
 LOGGER = LogManager()
 
-# AI PROVIDER IMPLEMENTATION (unchanged from previous version)
+# AI PROVIDER IMPLEMENTATION
 class AIProvider:
     """Base class for AI providers with common functionality."""
     def __init__(self, name: str, api_key: Optional[str] = None):
@@ -444,7 +445,7 @@ class AIProvider:
     def generate_code(self, prompt: str, system_prompt: str, max_tokens: int = 4096) -> Optional[str]: 
         raise NotImplementedError
 
-# Retry Mechanism (Decorator) (unchanged from previous version)
+# Retry Mechanism (Decorator)
 def with_retries(func: Callable, max_retries: int = config.api_max_retries, backoff_factor: float = 1.0) -> Any:
     """Decorator to retry a function with exponential backoff."""
     def wrapper(*args, **kwargs):
@@ -1071,19 +1072,21 @@ def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic
         # Update repository info if provided
         if repo_url_input:
             try:
-                repo_owner = repo_url_input.split("/")[-2]
-                config.repo_owner = repo_owner
-                config.repo_name = repo_url_input.split("/")[-1].replace(".git", "")
-                LOGGER.info(f"Setting repo owner: {config.repo_owner} and repo name: {config.repo_name}")
-            except IndexError:
-                LOGGER.warning("Could not determine repo owner/name from URL. Using default.")
+                parts = repo_url_input.strip().strip('/').split('/')
+                if len(parts) >= 2:
+                    config.repo_owner = parts[-2]
+                    config.repo_name = parts[-1].replace(".git", "")
+                    LOGGER.info(f"Setting repo owner: {config.repo_owner} and repo name: {config.repo_name}")
+                else:
+                    LOGGER.warning("Invalid repository URL format")
+            except Exception as e:
+                LOGGER.warning(f"Could not determine repo owner/name from URL: {e}")
                 
         # Validate configuration
         config_errors = config.validate()
         if config_errors:
-            for error in config_errors:
-                LOGGER.error(f"Configuration error: {error}")
-            return log_output, "Configuration errors. Check logs.", "Configuration errors. Check logs."
+            error_msg = "\n".join(config_errors)
+            return log_output, f"Configuration errors:\n{error_msg}", "Configuration errors"
 
         # 2. Initialize the Agent
         agent = AutonomousAgent()
@@ -1095,13 +1098,14 @@ def run_aks_pipeline(user_zip_file, repo_url_input, analysis_claim, debate_topic
         # 3. Process User Uploads (if any)
         if user_zip_file:
             try:
+                upload_path = config.user_uploads_dir
                 with zipfile.ZipFile(user_zip_file.name, 'r') as zip_ref:
-                    zip_ref.extractall(config.user_uploads_dir)
-                LOGGER.info(f"Extracted user files to: {config.user_uploads_dir}")
+                    zip_ref.extractall(upload_path)
+                LOGGER.info(f"Extracted user files to: {upload_path}")
                 
                 # Process the uploaded files
                 agent.task_scheduler.run_task(
-                    lambda: agent.information_sourcing.process_uploaded_files(config.user_uploads_dir)
+                    lambda: agent.information_sourcing.process_uploaded_files(upload_path)
                 )
             except Exception as e:
                 LOGGER.error(f"Error processing uploaded zip file: {e}")
