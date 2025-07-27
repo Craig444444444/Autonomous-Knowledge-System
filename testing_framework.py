@@ -1,4 +1,3 @@
-# testing_framework.py
 import logging
 import unittest
 import time
@@ -260,7 +259,7 @@ class AKSTestRunner:
         with open(perf_report, 'w') as f:
             json.dump(performance_data, f, indent=2)
 
-# Add alias to fix import issue
+# Explicitly define the alias needed for imports
 TestingFramework = AKSTestRunner
 
 class AKSTestLoader(unittest.TestLoader):
