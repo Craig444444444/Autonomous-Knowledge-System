@@ -1,6 +1,3 @@
-Here's the complete `documentation_generator.py` file ready for copying, with all the improvements and fixes:
-
-```python
 import logging
 import re
 import ast
