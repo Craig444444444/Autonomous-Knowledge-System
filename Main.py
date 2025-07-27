@@ -638,7 +638,7 @@ class AIProviderManager:
                 try:
                     result = generate_method(prompt, system_prompt, max_tokens)
                     if result is not None:
-                    return result
+                        return result
                 except Exception as e:
                     LOGGER.warning(f"Provider {provider.name} failed for {method_name}: {e}. Trying next provider.")
                     continue
