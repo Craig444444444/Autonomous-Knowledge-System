@@ -17,12 +17,12 @@ class Monitoring:
     Comprehensive system monitoring for AKS with performance tracking,
     resource alerts, and health checks.
     """
-    def __init__(self, config: Dict):
+    def __init__(self, config: Any):  # Changed type hint to Any
         """
         Initialize monitoring system with configuration.
         
         Args:
-            config: Dictionary containing monitoring configuration
+            config: Configuration object or dictionary
         """
         self.config = config
         self.metrics_history: Dict[str, Deque[Dict]] = {
@@ -42,7 +42,15 @@ class Monitoring:
     def _setup_directories(self):
         """Create required monitoring directories."""
         try:
-            log_dir = Path(self.config.get('monitoring_dir', '/content/logs/monitoring'))
+            # Handle both dictionary and object configs
+            if hasattr(self.config, 'monitoring_dir'):
+                log_dir_value = self.config.monitoring_dir
+            elif hasattr(self.config, 'get'):
+                log_dir_value = self.config.get('monitoring_dir', '/content/logs/monitoring')
+            else:
+                log_dir_value = '/content/logs/monitoring'
+                
+            log_dir = Path(log_dir_value)
             log_dir.mkdir(parents=True, exist_ok=True)
             log_dir.chmod(0o755)
             self.log_file = log_dir / 'aks_monitor.log'
@@ -224,21 +232,28 @@ class Monitoring:
 
     def _check_thresholds(self, metrics: Dict):
         """Check metrics against configured thresholds and trigger alerts."""
-        thresholds = self.config.get('thresholds', {})
+        # Handle both dictionary and object configs
+        if hasattr(self.config, 'thresholds'):
+            thresholds = self.config.thresholds
+        elif hasattr(self.config, 'get'):
+            thresholds = self.config.get('thresholds', {})
+        else:
+            thresholds = {}
+            
         alerts = []
 
         # CPU threshold check
-        cpu_thresh = thresholds.get('cpu', 90)
+        cpu_thresh = thresholds.get('cpu', 90) if isinstance(thresholds, dict) else getattr(thresholds, 'cpu', 90)
         if metrics['cpu'].get('percent', 0) > cpu_thresh:
             alerts.append(f"High CPU usage: {metrics['cpu']['percent']}%")
 
         # Memory threshold check
-        mem_thresh = thresholds.get('memory', 90)
+        mem_thresh = thresholds.get('memory', 90) if isinstance(thresholds, dict) else getattr(thresholds, 'memory', 90)
         if metrics['memory'].get('percent', 0) > mem_thresh:
             alerts.append(f"High memory usage: {metrics['memory']['percent']}%")
 
         # Disk threshold check
-        disk_thresh = thresholds.get('disk', 90)
+        disk_thresh = thresholds.get('disk', 90) if isinstance(thresholds, dict) else getattr(thresholds, 'disk', 90)
         if metrics['disk'].get('percent', 0) > disk_thresh:
             alerts.append(f"High disk usage: {metrics['disk']['percent']}%")
 
