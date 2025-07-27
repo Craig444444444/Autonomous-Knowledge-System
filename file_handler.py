@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import PyPDF2
 from datetime import datetime
+import json
+import ast
+import re
 
 # Safe docx import with fallback
 try:
