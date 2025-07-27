@@ -14,11 +14,8 @@ import re
 try:
     from docx import Document
 except ImportError:
-    try:
-        from docx.api import Document
-    except ImportError:
-        Document = None
-        logging.warning("docx module not available - DOCX extraction will be limited")
+    Document = None
+    logging.warning("docx module not available - DOCX extraction will be limited")
 
 LOGGER = logging.getLogger("aks")
 
@@ -46,9 +43,7 @@ class FileHandler:
                 return self._read_pdf(path)
             elif path.suffix == '.docx':
                 return self._read_docx(path)
-            elif path.suffix == '.json':
-                with open(path, 'r', encoding='utf-8') as f:
-                    return json.dumps(json.load(f))
+            # Removed special JSON handling - treat as text file
             else:
                 # Try different encodings for text files
                 for encoding in ['utf-8', 'latin-1', 'iso-8859-1']:
@@ -91,10 +86,13 @@ class FileHandler:
         path = self.base_path / relative_path
         temp_path = None  # Initialize temp_path variable
         
+        # Only allow writing to text-based formats
+        writable_extensions = ['.txt', '.py', '.md', '.json']
+        
         try:
-            # Validate file extension
-            if path.suffix not in self.supported_extensions:
-                LOGGER.warning(f"Unsupported file type: {path.suffix}")
+            # Validate file extension against writable formats
+            if path.suffix not in writable_extensions:
+                LOGGER.error(f"Writing to '{path.suffix}' format is not supported. Only text-based formats allowed.")
                 return False
 
             # Validate content size
@@ -137,7 +135,11 @@ class FileHandler:
             backup_dir = self.base_path / "deleted_backups"
             backup_dir.mkdir(exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = backup_dir / f"{relative_path.replace('/', '_')}_{timestamp}"
+            
+            # Robust path sanitization for both Windows and Unix
+            sanitized_name = str(relative_path).replace('/', '_').replace('\\', '_')
+            backup_path = backup_dir / f"{sanitized_name}_{timestamp}"
+            
             shutil.copy(path, backup_path)
 
             # Delete original
@@ -149,17 +151,18 @@ class FileHandler:
             return False
 
     def archive_directory(self, source_dir: Path, target_dir: Path) -> bool:
-        """Archive a directory to zip file."""
+        """Archive a directory to zip file using pathlib."""
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d")
             zip_path = target_dir / f"archive_{timestamp}.zip"
 
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, _, files in os.walk(source_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, source_dir)
+                # Use pathlib for consistent directory traversal
+                for file_path in source_dir.rglob('*'):
+                    if file_path.is_file():
+                        # Get relative path within source_dir
+                        arcname = file_path.relative_to(source_dir)
                         zipf.write(file_path, arcname)
 
             LOGGER.info(f"Archived {source_dir} to {zip_path}")
