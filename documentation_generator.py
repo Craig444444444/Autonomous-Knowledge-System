@@ -1,9 +1,8 @@
 import logging
 import re
 import ast
-import inspect
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Union
 import json
 from datetime import datetime
 import markdown
@@ -12,23 +11,7 @@ from bs4 import BeautifulSoup
 LOGGER = logging.getLogger("aks")
 
 class DocumentationGenerator:
-    """
-    Automated documentation generator for the AKS system with enhanced capabilities:
-    - Generates documentation from source code, knowledge items, and system metadata
-    - Supports multiple output formats (Markdown, HTML, JSON)
-    - Maintains versioned documentation
-    - Integrates with the knowledge base
-    - Improved parsing and error handling
-    """
-    
     def __init__(self, repo_path: Path, knowledge_processor: Any):
-        """
-        Initialize the documentation generator.
-        
-        Args:
-            repo_path: Path to the repository root
-            knowledge_processor: Instance of KnowledgeProcessor
-        """
         self.repo_path = repo_path.resolve()
         self.knowledge_processor = knowledge_processor
         self.docs_dir = self.repo_path / "docs"
@@ -36,7 +19,6 @@ class DocumentationGenerator:
         self._setup_directories()
         
     def _setup_directories(self) -> None:
-        """Create required documentation directories."""
         try:
             self.docs_dir.mkdir(exist_ok=True)
             (self.docs_dir / "versions").mkdir(exist_ok=True)
@@ -47,7 +29,6 @@ class DocumentationGenerator:
             raise RuntimeError("Documentation setup failed") from e
             
     def _load_templates(self) -> Dict[str, str]:
-        """Load documentation templates with improved structure."""
         return {
             "module": """
 ## {name}
@@ -98,10 +79,6 @@ class DocumentationGenerator:
         }
     
     def parse_python_file(self, file_path: Path) -> Dict[str, Any]:
-        """
-        Parse a Python file to extract documentation elements with AST parsing
-        for more accurate information extraction.
-        """
         result = {
             "path": str(file_path.relative_to(self.repo_path)),
             "last_updated": datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
@@ -115,12 +92,10 @@ class DocumentationGenerator:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 
-            # Extract module docstring
             module = ast.parse(content)
             result["description"] = ast.get_docstring(module) or ""
             
-            # Parse AST nodes
-            for node in ast.walk(module):
+            for node in module.body:
                 if isinstance(node, ast.FunctionDef):
                     func_info = {
                         "name": node.name,
@@ -137,7 +112,6 @@ class DocumentationGenerator:
                         "methods": []
                     }
                     
-                    # Extract class methods
                     for subnode in node.body:
                         if isinstance(subnode, ast.FunctionDef):
                             method_info = {
@@ -156,11 +130,9 @@ class DocumentationGenerator:
         return result
     
     def _get_function_signature(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> str:
-        """Generate function signature from AST node."""
         args = [arg.arg for arg in node.args.args]
         defaults = [ast.unparse(d) for d in node.args.defaults] if node.args.defaults else []
         
-        # Handle positional arguments
         positional_args = []
         for i, arg in enumerate(args):
             if i >= len(args) - len(defaults):
@@ -169,7 +141,6 @@ class DocumentationGenerator:
             else:
                 positional_args.append(arg)
         
-        # Handle keyword-only arguments
         kwonlyargs = [arg.arg for arg in node.args.kwonlyargs]
         kw_defaults = [ast.unparse(d) if d else None for d in node.args.kw_defaults]
         kw_args = []
@@ -179,7 +150,6 @@ class DocumentationGenerator:
             else:
                 kw_args.append(arg)
                 
-        # Combine all arguments
         all_args = positional_args
         if node.args.vararg:
             all_args.append(f"*{node.args.vararg.arg}")
@@ -191,11 +161,10 @@ class DocumentationGenerator:
         if node.args.kwarg:
             all_args.append(f"**{node.args.kwarg.arg}")
             
-        return f"def {node.name}({', '.join(all_args)}):"
+        async_prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
+        return f"{async_prefix}def {node.name}({', '.join(all_args)}):"
     
     def generate_module_documentation(self, module_info: Dict[str, Any]) -> str:
-        """Generate documentation for a module using the template."""
-        # Format functions
         functions_str = "\n".join([
             self.templates["function"].format(
                 name=func["name"],
@@ -205,7 +174,6 @@ class DocumentationGenerator:
             for func in module_info["functions"]
         ]) or "No functions"
         
-        # Format classes
         classes_str = "\n".join([
             self.templates["class"].format(
                 name=cls["name"],
@@ -223,7 +191,6 @@ class DocumentationGenerator:
             for cls in module_info["classes"]
         ]) or "No classes"
         
-        # Format examples
         examples_str = "\n".join([
             f"```python\n{example}\n```"
             for example in module_info.get("examples", [])
@@ -240,11 +207,8 @@ class DocumentationGenerator:
         )
     
     def generate_html(self, markdown_content: str) -> str:
-        """Convert Markdown to HTML with table of contents."""
-        # Create basic HTML structure
         html_content = markdown.markdown(markdown_content)
         
-        # Generate table of contents
         soup = BeautifulSoup(html_content, 'html.parser')
         toc = []
         headers = soup.find_all(['h2', 'h3', 'h4'])
@@ -258,55 +222,42 @@ class DocumentationGenerator:
         
         toc_html = f"<div class='toc'><ul>{''.join(toc)}</ul></div>" if toc else ""
         
-        # Wrap in full HTML document
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>AKS Documentation</title>
-            <style>
-                body {{ font-family: sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }}
-                .toc {{ background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
-                code {{ background: #f0f0f0; padding: 2px 5px; border-radius: 3px; }}
-                pre {{ background: #f8f8f8; padding: 10px; border-radius: 5px; overflow-x: auto; }}
-            </style>
-        </head>
-        <body>
-            <h1>Autonomous Knowledge System Documentation</h1>
-            {toc_html}
-            {html_content}
-        </body>
-        </html>
-        """
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>AKS Documentation</title>
+    <style>
+        body {{ font-family: sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }}
+        .toc {{ background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        code {{ background: #f0f0f0; padding: 2px 5px; border-radius: 3px; }}
+        pre {{ background: #f8f8f8; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+    </style>
+</head>
+<body>
+    <h1>Autonomous Knowledge System Documentation</h1>
+    {toc_html}
+    {html_content}
+</body>
+</html>"""
     
     def generate_documentation(self, output_formats: List[str] = ['md', 'html', 'json']) -> None:
-        """
-        Generate comprehensive documentation for the entire project.
-        
-        Args:
-            output_formats: List of formats to generate (md, html, json)
-        """
         LOGGER.info("Starting documentation generation")
         
-        # Find all Python files in the repository
         py_files = list(self.repo_path.rglob('*.py'))
         if not py_files:
             LOGGER.warning("No Python files found in repository")
             return
         
-        # Create versioned documentation directory
         version = datetime.now().strftime('%Y%m%d_%H%M%S')
         version_dir = self.docs_dir / "versions" / version
         version_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create latest symlink
         latest_dir = self.docs_dir / "latest"
         if latest_dir.exists():
             latest_dir.unlink()
         latest_dir.symlink_to(version_dir, target_is_directory=True)
         
-        # Process each file
         all_docs = {}
         for py_file in py_files:
             if any(part.startswith('.') or part == '__pycache__' for part in py_file.parts):
@@ -316,10 +267,7 @@ class DocumentationGenerator:
             module_info = self.parse_python_file(py_file)
             all_docs[str(py_file.relative_to(self.repo_path))] = module_info
             
-            # Generate documentation for this module
             md_content = self.generate_module_documentation(module_info)
-            
-            # Save in versioned directory
             base_name = py_file.relative_to(self.repo_path).with_suffix('')
             
             if 'md' in output_formats:
@@ -341,18 +289,14 @@ class DocumentationGenerator:
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(module_info, f, indent=2)
         
-        # Generate index file
         self._generate_index(all_docs, version_dir, output_formats)
-        
         LOGGER.info(f"Documentation generated successfully in {version_dir}")
     
     def _generate_index(self, all_docs: Dict[str, Any], version_dir: Path, output_formats: List[str]) -> None:
-        """Generate index file listing all documented modules."""
         index_content = "# AKS Documentation Index\n\n"
         index_content += f"**Generated at**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         index_content += "## Modules\n\n"
         
-        # Add knowledge base integration
         if self.knowledge_processor:
             try:
                 kb_items = self.knowledge_processor.get_recent_items(limit=5)
@@ -363,7 +307,6 @@ class DocumentationGenerator:
             except Exception as e:
                 LOGGER.error(f"Failed to integrate knowledge base: {str(e)}")
         
-        # List all modules
         for file_path, module_info in all_docs.items():
             base_name = Path(file_path).with_suffix('')
             index_content += f"### `{file_path}`\n"
@@ -373,7 +316,6 @@ class DocumentationGenerator:
             index_content += f"[JSON]({base_name}.json)\n"
             index_content += f"{module_info['description'][:200]}...\n\n"
         
-        # Save index file in all formats
         if 'md' in output_formats:
             with open(version_dir / "index.md", 'w', encoding='utf-8') as f:
                 f.write(index_content)
@@ -390,16 +332,3 @@ class DocumentationGenerator:
             }
             with open(version_dir / "index.json", 'w', encoding='utf-8') as f:
                 json.dump(index_data, f, indent=2)
-```
-
-This version includes:
-1. Complete docstrings for all methods
-2. Proper type hints
-3. AST-based parsing for accurate code analysis
-4. Support for multiple output formats (Markdown, HTML, JSON)
-5. Versioned documentation system
-6. Knowledge base integration
-7. Comprehensive error handling
-8. Automatic table of contents generation for HTML output
-
-You can copy this entire code and replace your existing file. The implementation is production-ready and includes all the improvements we discussed.
