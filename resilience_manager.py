@@ -20,17 +20,19 @@ class ResilienceManager:
     Enhanced system resilience manager with improved snapshot handling,
     validation, and security features for the AKS system.
     """
-    def __init__(self, repo_path: Path, snapshot_dir: Path, max_snapshots: int = 5):
+    def __init__(self, repo_path: Path, snapshot_dir: Path, git_manager: Any = None, max_snapshots: int = 5):
         """
         Initialize the enhanced ResilienceManager.
 
         Args:
             repo_path: Path to the repository (validated)
             snapshot_dir: Directory to store snapshots (created if needed)
+            git_manager: Optional GitManager instance for version control integration
             max_snapshots: Maximum number of snapshots to retain (minimum 1)
         """
         self.repo_path = repo_path.resolve()
         self.snapshot_dir = snapshot_dir.resolve()
+        self.git_manager = git_manager
         self.max_snapshots = max(1, max_snapshots)  # Ensure at least 1 snapshot is kept
         self._setup_directories()
         self._processed_hashes = set()  # Track processed snapshots
@@ -45,7 +47,9 @@ class ResilienceManager:
 
             # Verify repository exists
             if not self.repo_path.exists():
-                raise FileNotFoundError(f"Repository path does not exist: {self.repo_path}")
+                LOGGER.warning(f"Repository path does not exist: {self.repo_path}")
+                self.repo_path.mkdir(parents=True, exist_ok=True)
+                LOGGER.info(f"Created repository directory at {self.repo_path}")
 
             LOGGER.debug("Verified/Created required directories")
         except Exception as e:
@@ -84,7 +88,7 @@ class ResilienceManager:
                 self._copy_repo_to_temp(temp_repo)
 
                 # Add metadata file
-                self._create_snapshot_metadata(temp_repo, tag, description)
+                metadata = self._create_snapshot_metadata(temp_repo, tag, description)
 
                 # Create checksum of the snapshot content
                 snapshot_hash = self._hash_directory(temp_repo)
@@ -103,6 +107,14 @@ class ResilienceManager:
 
                 self._processed_hashes.add(snapshot_hash)
                 LOGGER.info(f"Snapshot created successfully: {snapshot_path.name}")
+                
+                # Create a Git tag if GitManager is available
+                if self.git_manager:
+                    tag_name = f"snapshot-{tag}-{timestamp}"
+                    if self.git_manager.create_tag(tag_name, json.dumps(metadata)):
+                        LOGGER.info(f"Created Git tag for snapshot: {tag_name}")
+                    else:
+                        LOGGER.warning("Failed to create Git tag for snapshot")
 
                 # Clean up old snapshots
                 self.cleanup_snapshots()
@@ -121,6 +133,12 @@ class ResilienceManager:
             '.tmp', '.swp', '*.bak', '.DS_Store'
         )
 
+        # Ensure source directory exists
+        if not self.repo_path.exists():
+            LOGGER.warning(f"Source repository not found: {self.repo_path}")
+            dest_path.mkdir(parents=True, exist_ok=True)
+            return
+
         shutil.copytree(
             self.repo_path,
             dest_path,
@@ -136,7 +154,7 @@ class ResilienceManager:
             for f in files:
                 os.chmod(Path(root) / f, 0o644)
 
-    def _create_snapshot_metadata(self, dest_path: Path, tag: str, description: str) -> None:
+    def _create_snapshot_metadata(self, dest_path: Path, tag: str, description: str) -> Dict:
         """Create metadata file for the snapshot."""
         metadata = {
             "timestamp": datetime.now().isoformat(),
@@ -149,19 +167,38 @@ class ResilienceManager:
             }
         }
 
+        # Add Git information if available
+        if self.git_manager:
+            try:
+                status = self.git_manager.get_repository_status()
+                metadata["git"] = {
+                    "branch": status.get("branch"),
+                    "commit": status.get("last_commit", {}).get("hash") if status.get("last_commit") else None
+                }
+            except Exception as e:
+                LOGGER.warning(f"Could not add Git metadata: {e}")
+
         metadata_path = dest_path / ".aks_snapshot_meta.json"
         with metadata_path.open('w') as f:
             json.dump(metadata, f, indent=2)
         metadata_path.chmod(0o644)
+        
+        return metadata
 
     def _hash_directory(self, directory: Path) -> str:
         """Create a hash of directory contents for duplicate detection."""
         hasher = hashlib.sha256()
 
+        if not directory.exists():
+            return ""
+
         for root, _, files in os.walk(directory):
             for file in sorted(files):  # Sort for consistent ordering
                 file_path = Path(root) / file
-                hasher.update(file_path.read_bytes())
+                try:
+                    hasher.update(file_path.read_bytes())
+                except Exception as e:
+                    LOGGER.warning(f"Could not hash file {file_path}: {e}")
 
         return hasher.hexdigest()
 
@@ -171,6 +208,10 @@ class ResilienceManager:
         temp_zip = dest_zip.with_suffix('.tmp')
 
         with zipfile.ZipFile(temp_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            if not source_dir.exists():
+                LOGGER.warning(f"Source directory not found: {source_dir}")
+                return
+                
             for root, _, files in os.walk(source_dir):
                 for file in files:
                     file_path = Path(root) / file
@@ -203,7 +244,7 @@ class ResilienceManager:
 
                     # Check for reasonable uncompressed size
                     total_size += info.file_size
-                    if total_size > 100 * 1024 * 1024:  # 100MB limit
+                    if total_size > 500 * 1024 * 1024:  # 500MB limit
                         LOGGER.warning("Zip file exceeds size safety limit")
                         return False
 
@@ -253,8 +294,9 @@ class ResilienceManager:
         LOGGER.warning(f"Initiating restoration from snapshot: {snapshot_path.name}")
 
         # Create secure temporary extraction directory
-        temp_extract = self.snapshot_dir / f"restore_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        temp_extract.mkdir(mode=0o700)
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        temp_extract = self.snapshot_dir / f"restore_{timestamp}"
+        temp_extract.mkdir(mode=0o700, exist_ok=True)
 
         try:
             # Step 1: Extract to temporary location
@@ -267,21 +309,36 @@ class ResilienceManager:
                 LOGGER.error("Snapshot extraction failed - missing repo directory")
                 return False
 
-            # Step 3: Prepare existing repo - move to backup
-            backup_path = self.snapshot_dir / f"pre_restore_backup_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            self._create_backup(backup_path)
+            # Step 3: Create backup of current state
+            backup_path = self.snapshot_dir / f"pre_restore_backup_{timestamp}"
+            backup_success = self._create_backup(backup_path)
+            if not backup_success:
+                LOGGER.error("Backup creation failed - aborting restore")
+                return False
 
-            # Step 4: Clear existing repo (preserve .git)
+            # Step 4: Clear existing repo (preserve .git if exists)
             self._clear_repo_for_restore()
 
-            # Step 5: Move files from temp to repo (atomic where possible)
+            # Step 5: Move files from temp to repo
             self._move_extracted_files(extracted_repo)
+
+            # Step 6: Commit the restored state if GitManager is available
+            if self.git_manager:
+                commit_message = f"Restored from snapshot: {snapshot_path.name}"
+                if self.git_manager.add_and_commit(commit_message):
+                    LOGGER.info("Committed restored state to Git")
+                else:
+                    LOGGER.warning("Failed to commit restored state to Git")
 
             LOGGER.info("Snapshot restored successfully")
             return True
 
         except Exception as e:
             LOGGER.error(f"Restoration failed: {e}", exc_info=True)
+            # Attempt to restore from backup
+            if backup_path.exists():
+                LOGGER.warning("Attempting to restore from backup")
+                self._restore_from_backup(backup_path)
             return False
         finally:
             # Clean up temporary files
@@ -290,14 +347,14 @@ class ResilienceManager:
     def _create_backup(self, backup_path: Path) -> bool:
         """Create backup of current repository state."""
         try:
-            backup_path.mkdir()
+            backup_path.mkdir(parents=True, exist_ok=True)
             LOGGER.info(f"Creating pre-restore backup at {backup_path}")
 
             for item in self.repo_path.iterdir():
-                if item.name != ".git":
+                if item.name != ".git":  # Preserve .git directory
                     dest = backup_path / item.name
                     if item.is_dir():
-                        shutil.copytree(item, dest)
+                        shutil.copytree(item, dest, dirs_exist_ok=True)
                     else:
                         shutil.copy2(item, dest)
 
@@ -306,18 +363,38 @@ class ResilienceManager:
             LOGGER.error(f"Backup creation failed: {e}")
             return False
 
+    def _restore_from_backup(self, backup_path: Path) -> bool:
+        """Restore repository from backup."""
+        try:
+            LOGGER.warning(f"Restoring from backup: {backup_path}")
+            
+            # Clear current repo
+            self._clear_repo_for_restore()
+            
+            # Copy from backup
+            for item in backup_path.iterdir():
+                dest = self.repo_path / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+                    
+            return True
+        except Exception as e:
+            LOGGER.error(f"Backup restoration failed: {e}")
+            return False
+
     def _clear_repo_for_restore(self) -> None:
         """Clear repository contents while preserving git data."""
         for item in self.repo_path.iterdir():
-            if item.name != ".git":
+            if item.name != ".git":  # Preserve .git directory
                 try:
                     if item.is_dir():
-                        shutil.rmtree(item)
+                        shutil.rmtree(item, ignore_errors=True)
                     else:
-                        item.unlink()
+                        item.unlink(missing_ok=True)
                 except Exception as e:
                     LOGGER.error(f"Failed to remove {item}: {e}")
-                    raise
 
     def _move_extracted_files(self, source_dir: Path) -> None:
         """Move files from extracted snapshot to repository."""
@@ -325,12 +402,11 @@ class ResilienceManager:
             dest = self.repo_path / item.name
             try:
                 if item.is_dir():
-                    shutil.copytree(item, dest)
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
                 else:
-                    shutil.move(str(item), str(dest))
+                    shutil.copy2(str(item), str(dest))
             except Exception as e:
                 LOGGER.error(f"Failed to move {item.name}: {e}")
-                raise
 
     def get_available_snapshots(self) -> List[Dict[str, Any]]:
         """Get list of available snapshots with metadata."""
@@ -338,6 +414,11 @@ class ResilienceManager:
 
         for snapshot_file in self.snapshot_dir.glob("aks_snapshot_*.zip"):
             try:
+                # Quick validation check
+                if not self._validate_snapshot(snapshot_file):
+                    LOGGER.warning(f"Skipping invalid snapshot: {snapshot_file.name}")
+                    continue
+
                 with zipfile.ZipFile(snapshot_file, 'r') as zipf:
                     if '.aks_snapshot_meta.json' in zipf.namelist():
                         with zipf.open('.aks_snapshot_meta.json') as meta_file:
@@ -372,16 +453,19 @@ class ResilienceManager:
             except Exception as e:
                 LOGGER.error(f"Failed to remove snapshot {snapshot['path'].name}: {e}")
 
-    def archive_old_snapshots(self) -> None:
+    def archive_old_snapshots(self) -> bool:
         """Archive old snapshots to compressed archive."""
         snapshots = self.get_available_snapshots()
         if len(snapshots) <= self.max_snapshots:
-            return
+            return True
 
-        # Create archive of old snapshots
+        # Create archive directory if needed
+        archive_dir = self.snapshot_dir.parent / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create archive file
         archive_name = f"aks_snapshots_archive_{datetime.now().strftime('%Y%m%d')}.zip"
-        archive_path = self.snapshot_dir.parent / "archive" / archive_name
-        archive_path.parent.mkdir(exist_ok=True)
+        archive_path = archive_dir / archive_name
 
         try:
             with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -390,8 +474,13 @@ class ResilienceManager:
 
             # Remove archived snapshots
             for snapshot in snapshots[self.max_snapshots:]:
-                snapshot["path"].unlink()
+                try:
+                    snapshot["path"].unlink()
+                except Exception as e:
+                    LOGGER.error(f"Failed to remove snapshot {snapshot['path'].name}: {e}")
 
             LOGGER.info(f"Archived {len(snapshots) - self.max_snapshots} snapshots to {archive_path}")
+            return True
         except Exception as e:
             LOGGER.error(f"Failed to archive snapshots: {e}")
+            return False
