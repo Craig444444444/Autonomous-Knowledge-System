@@ -712,7 +712,7 @@ class AutonomousAgent:
         self.resilience_manager = ResilienceManager(config.repo_path, config.snapshot_dir, config.max_snapshots)
         self.security_manager = SecurityManager()
         self.audit_manager = AuditManager(config.repo_path)
-        self.monitoring = Monitoring()  # New monitoring system
+        self.monitoring = Monitoring(config)  # FIXED: Pass config to Monitoring
         self.task_scheduler = TaskScheduler(max_tasks=config.max_concurrent_tasks)  # New task scheduler
         
         # Collaboration and integration components
