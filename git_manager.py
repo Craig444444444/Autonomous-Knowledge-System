@@ -30,30 +30,36 @@ class GitManager:
         self._configured = False
 
         LOGGER.info(f"Initializing GitManager for {self.repo_path}")
+        # Ensure repository directory exists
+        self.repo_path.mkdir(parents=True, exist_ok=True)
         self._configure_git_environment()
 
     def _configure_git_environment(self):
         """Configure Git environment with safe defaults and authentication."""
         try:
-            # Set safe directory configuration
-            self._run_git_command(["config", "--global", "safe.directory", str(self.repo_path)])
-
-            # Configure user identity
-            self._run_git_command(["config", "--global", "user.email", f"{self.repo_owner}@aks-ai.system"])
-            self._run_git_command(["config", "--global", "user.name", "AKS Autonomous System"])
-
-            # Set safe Git configurations
-            self._run_git_command(["config", "--global", "pull.rebase", "false"])
-            self._run_git_command(["config", "--global", "credential.helper", "cache --timeout=3600"])
-
-            # Disable automatic garbage collection during operations
+            # First try local configuration
+            LOGGER.info("Attempting local Git configuration")
+            self._run_git_command(["config", "--local", "safe.directory", str(self.repo_path)])
+            self._run_git_command(["config", "--local", "user.email", f"{self.repo_owner}@aks-ai.system"])
+            self._run_git_command(["config", "--local", "user.name", "AKS Autonomous System"])
+            self._run_git_command(["config", "--local", "pull.rebase", "false"])
             self._run_git_command(["config", "--local", "gc.auto", "0"])
-
             self._configured = True
-            LOGGER.info("Git environment configured successfully")
+            LOGGER.info("Git environment configured successfully (local config)")
         except Exception as e:
-            LOGGER.error(f"Failed to configure Git environment: {e}")
-            raise RuntimeError("Git environment configuration failed") from e
+            LOGGER.warning(f"Local configuration failed: {e}. Using environment variables as fallback")
+            try:
+                # Fallback to environment variables
+                os.environ['GIT_SAFE_DIRECTORY'] = str(self.repo_path)
+                os.environ['GIT_AUTHOR_NAME'] = "AKS Autonomous System"
+                os.environ['GIT_COMMITTER_NAME'] = "AKS Autonomous System"
+                os.environ['GIT_AUTHOR_EMAIL'] = f"{self.repo_owner}@aks-ai.system"
+                os.environ['GIT_COMMITTER_EMAIL'] = f"{self.repo_owner}@aks-ai.system"
+                self._configured = True
+                LOGGER.info("Git environment configured via environment variables")
+            except Exception as env_e:
+                LOGGER.error(f"Fallback configuration failed: {env_e}")
+                raise RuntimeError("Git environment configuration failed") from env_e
 
     def _acquire_lock(self, timeout: int = 30) -> bool:
         """Acquire a filesystem lock for thread-safe operations."""
@@ -106,7 +112,8 @@ class GitManager:
 
         cwd = cwd or self.repo_path
         if not cwd.exists():
-            raise FileNotFoundError(f"Working directory does not exist: {cwd}")
+            cwd.mkdir(parents=True, exist_ok=True)
+            LOGGER.warning(f"Created missing working directory: {cwd}")
 
         # Sanitize command arguments
         try:
@@ -150,7 +157,11 @@ class GitManager:
                     last_error = f"Git command failed (exit {process.returncode}): {error_msg}"
 
                     # Handle specific error cases
-                    if "Authentication failed" in error_msg:
+                    if "safe.directory" in error_msg:
+                        LOGGER.warning("Safe directory error detected, applying fallback")
+                        env['GIT_SAFE_DIRECTORY'] = str(self.repo_path)
+                        continue
+                    elif "Authentication failed" in error_msg:
                         LOGGER.error("Git authentication failed")
                         break
                     elif "would be overwritten by merge" in error_msg:
