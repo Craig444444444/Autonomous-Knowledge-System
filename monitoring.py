@@ -3,7 +3,7 @@ import time
 import psutil
 import platform
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any, Deque
 from pathlib import Path
 import socket
 import threading
@@ -12,7 +12,7 @@ from collections import deque
 
 LOGGER = logging.getLogger("aks")
 
-class SystemMonitor:
+class Monitoring:
     """
     Comprehensive system monitoring for AKS with performance tracking,
     resource alerts, and health checks.
@@ -25,19 +25,19 @@ class SystemMonitor:
             config: Dictionary containing monitoring configuration
         """
         self.config = config
-        self.metrics_history = {
+        self.metrics_history: Dict[str, Deque[Dict]] = {
             'cpu': deque(maxlen=60),
             'memory': deque(maxlen=60),
             'disk': deque(maxlen=60),
             'network': deque(maxlen=60)
         }
-        self.alert_history = []
-        self._running = False
-        self._monitor_thread = None
-        self.start_time = time.time()
+        self.alert_history: List[Dict] = []
+        self._running: bool = False
+        self._monitor_thread: Optional[threading.Thread] = None
+        self.start_time: float = time.time()
         self._setup_directories()
         
-        LOGGER.info("System Monitor initialized")
+        LOGGER.info("Monitoring system initialized")
 
     def _setup_directories(self):
         """Create required monitoring directories."""
@@ -46,6 +46,7 @@ class SystemMonitor:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_dir.chmod(0o755)
             self.log_file = log_dir / 'aks_monitor.log'
+            LOGGER.info(f"Created monitoring directory at {log_dir}")
         except Exception as e:
             LOGGER.error(f"Failed to setup monitoring directories: {e}")
             raise
@@ -72,13 +73,19 @@ class SystemMonitor:
 
     def stop_monitoring(self):
         """Stop the monitoring system."""
+        if not self._running:
+            return
+            
         self._running = False
-        if self._monitor_thread:
+        if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5)
+            if self._monitor_thread.is_alive():
+                LOGGER.warning("Monitoring thread did not stop gracefully")
         LOGGER.info("Monitoring stopped")
 
     def _monitor_loop(self, interval: int):
         """Main monitoring loop."""
+        LOGGER.debug("Monitoring loop started")
         while self._running:
             try:
                 metrics = self.collect_metrics()
@@ -118,13 +125,17 @@ class SystemMonitor:
 
     def _get_system_info(self) -> Dict:
         """Get static system information."""
-        return {
-            'hostname': socket.gethostname(),
-            'os': platform.system(),
-            'os_version': platform.release(),
-            'python_version': platform.python_version(),
-            'uptime': int(time.time() - self.start_time)
-        }
+        try:
+            return {
+                'hostname': socket.gethostname(),
+                'os': platform.system(),
+                'os_version': platform.release(),
+                'python_version': platform.python_version(),
+                'uptime': int(time.time() - self.start_time)
+            }
+        except Exception as e:
+            LOGGER.warning(f"System info collection failed: {e}")
+            return {}
 
     def _get_cpu_metrics(self) -> Dict:
         """Collect CPU utilization metrics."""
@@ -332,4 +343,4 @@ class SystemMonitor:
             'metrics_analyzed': 0,
             'alerts_triggered': len(self.alert_history),
             'recommendations': []
-          }
+        }
