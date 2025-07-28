@@ -1,4 +1,4 @@
-use Colab enhancer in Google colabs. copy past.
+use Colab enhancer in Google colabs. copy paste.
 
 input credentials 
 
