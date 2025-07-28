@@ -1,8 +1,11 @@
-use Colab enhancer in Google colabs. copy paste.
+Self-Enhancing AI-Powered Codebase
 
-input credentials 
+Use the Colab Enhancer in Google Colab:
 
-and automounsly update enhance your code base based on your input. 
+Copy & paste the script into a new Colab notebook.
 
+Input your credentials (GitHub token, Gemini API key).
 
-still needs refinement.
+It will autonomously update and enhance your codebase based on your input.
+
+⚠ Note: Still in refinement – contributions welcome!
